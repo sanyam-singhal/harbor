@@ -426,8 +426,8 @@ pub struct AppendAuthEventInput {
 pub trait UserStore: Clone + Send + Sync + 'static {
     /// Creates a user row.
     ///
-    /// Implementations must fail with [`StoreErrorCode::Conflict`] if the id
-    /// already exists.
+    /// Implementations must fail with [`crate::StoreErrorCode::Conflict`] if
+    /// the id already exists.
     ///
     /// # Errors
     ///

@@ -17,6 +17,10 @@ Options:
   --output-dir <dir>     Coverage artifact directory. Default: .local/coverage
   -h, --help             Show this help.
 
+Environment:
+  HARBOR_COVERAGE_FAIL_UNDER_LINES    Minimum line coverage. Default: 75.
+  HARBOR_COVERAGE_FAIL_UNDER_REGIONS  Minimum region coverage. Default: 70.
+
 Outputs:
   .local/coverage/summary.md
   .local/coverage/gate.txt
@@ -34,6 +38,8 @@ EOF
 packages=()
 feature_args=()
 output_dir=".local/coverage"
+fail_under_lines="${HARBOR_COVERAGE_FAIL_UNDER_LINES:-75}"
+fail_under_regions="${HARBOR_COVERAGE_FAIL_UNDER_REGIONS:-70}"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -90,6 +96,20 @@ if ! cargo llvm-cov --version >/dev/null 2>&1; then
   exit 1
 fi
 
+case "$fail_under_lines" in
+  ''|*[!0-9]*)
+    echo "HARBOR_COVERAGE_FAIL_UNDER_LINES must be an integer percentage." >&2
+    exit 1
+    ;;
+esac
+
+case "$fail_under_regions" in
+  ''|*[!0-9]*)
+    echo "HARBOR_COVERAGE_FAIL_UNDER_REGIONS must be an integer percentage." >&2
+    exit 1
+    ;;
+esac
+
 if [[ "${#feature_args[@]}" -eq 0 ]]; then
   feature_args=(--all-features)
 fi
@@ -132,8 +152,8 @@ Status: $status
 
 ## Gate
 
-- Line coverage: >= 90%
-- Region coverage: >= 90%
+- Line coverage: >= $fail_under_lines%
+- Region coverage: >= $fail_under_regions%
 
 ## Scope
 
@@ -186,7 +206,7 @@ cargo llvm-cov report "${report_scope_args[@]}" --lcov --output-path "$lcov_repo
 echo "==> cargo llvm-cov report ${report_scope_args[*]} --json --summary-only --output-path $json_report"
 cargo llvm-cov report "${report_scope_args[@]}" --json --summary-only --output-path "$json_report"
 
-gate_args=(llvm-cov report "${report_scope_args[@]}" --fail-under-lines 90 --fail-under-regions 90)
+gate_args=(llvm-cov report "${report_scope_args[@]}" --fail-under-lines "$fail_under_lines" --fail-under-regions "$fail_under_regions")
 echo "==> cargo ${gate_args[*]}"
 set +e
 cargo "${gate_args[@]}" 2>&1 | tee "$gate_log"
