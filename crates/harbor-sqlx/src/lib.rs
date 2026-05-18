@@ -4,6 +4,9 @@
 //! separate implementations that pass the same store contract tests.
 
 pub mod migrations;
+pub mod sqlite;
 
 /// Version of the `harbor-sqlx` crate.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+pub use sqlite::{SqliteAuthStore, SqliteStoreOptions};
