@@ -13,6 +13,7 @@ harbor-core.workspace = true
 harbor-email.workspace = true
 harbor-leptos.workspace = true
 harbor-sqlx.workspace = true
+tokio.workspace = true
 
 [lints]
 workspace = true

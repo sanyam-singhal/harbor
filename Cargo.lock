@@ -976,6 +976,7 @@ dependencies = [
  "harbor-email",
  "harbor-leptos",
  "harbor-sqlx",
+ "tokio",
 ]
 
 [[package]]
