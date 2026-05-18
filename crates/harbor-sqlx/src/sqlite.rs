@@ -6,10 +6,13 @@ use std::str::FromStr;
 use std::time::Duration;
 
 use harbor_core::{
-    CanonicalEmail, CreateUserEmailInput, CreateUserInput, DomainError, FindEmailByCanonicalInput,
-    GetPasswordCredentialInput, GetUserInput, InsertPasswordInput, MarkEmailVerifiedInput,
-    PasswordCredentialRecord, PasswordCredentialStore, StoreError, StoreErrorCode,
-    UnixTimestampMicros, UserEmailRecord, UserEmailStore, UserId, UserRecord, UserStore,
+    CanonicalEmail, ChallengeDelivery, ChallengeId, ChallengePurpose, ChallengeRecord,
+    ChallengeStore, CreateChallengeInput, CreateUserEmailInput, CreateUserInput, DomainError,
+    FindEmailByCanonicalInput, GetChallengeInput, GetPasswordCredentialInput, GetUserInput,
+    IncrementChallengeAttemptsInput, InsertPasswordInput, MarkEmailVerifiedInput,
+    PasswordCredentialRecord, PasswordCredentialStore, RedirectPath, RetryBudget, StoreError,
+    StoreErrorCode, TokenHash, UnixTimestampMicros, UserEmailRecord, UserEmailStore, UserId,
+    UserRecord, UserStore,
 };
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
 use sqlx::{Row, SqlitePool};
@@ -358,6 +361,108 @@ impl PasswordCredentialStore for SqliteAuthStore {
     }
 }
 
+impl ChallengeStore for SqliteAuthStore {
+    fn create_challenge(
+        &self,
+        input: CreateChallengeInput,
+    ) -> impl Future<Output = Result<ChallengeRecord, StoreError>> + Send {
+        let pool = self.pool.clone();
+        async move {
+            sqlx::query(
+                "INSERT INTO harbor_challenges \
+                 (id, purpose, user_id, email_canonical, secret_hash, delivery, redirect_path, \
+                  expires_at_unix_micros, consumed_at_unix_micros, attempt_count, max_attempts, \
+                  resend_after_unix_micros, created_at_unix_micros, last_sent_at_unix_micros) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, NULL, 0, ?9, ?10, ?11, NULL)",
+            )
+            .bind(input.id.as_str())
+            .bind(challenge_purpose_to_db(input.purpose))
+            .bind(input.user_id.as_ref().map(UserId::as_str))
+            .bind(input.email_canonical.as_str())
+            .bind(input.secret_hash.as_bytes())
+            .bind(challenge_delivery_to_db(input.delivery))
+            .bind(input.redirect_path.as_ref().map(RedirectPath::as_str))
+            .bind(input.expires_at.as_i64())
+            .bind(i64::try_from(input.max_attempts.get()).map_err(|_error| {
+                StoreError::with_detail(StoreErrorCode::CorruptData, "max_attempts")
+            })?)
+            .bind(input.resend_after.as_i64())
+            .bind(input.now.as_i64())
+            .execute(&pool)
+            .await
+            .map_err(|error| map_sqlx_error(error, "create_challenge"))?;
+
+            Ok(ChallengeRecord {
+                id: input.id,
+                purpose: input.purpose,
+                user_id: input.user_id,
+                email_canonical: input.email_canonical,
+                secret_hash: input.secret_hash,
+                delivery: input.delivery,
+                redirect_path: input.redirect_path,
+                expires_at: input.expires_at,
+                consumed_at: None,
+                attempt_count: 0,
+                max_attempts: input.max_attempts,
+                resend_after: input.resend_after,
+                created_at: input.now,
+                last_sent_at: None,
+            })
+        }
+    }
+
+    fn get_challenge(
+        &self,
+        input: GetChallengeInput,
+    ) -> impl Future<Output = Result<Option<ChallengeRecord>, StoreError>> + Send {
+        let pool = self.pool.clone();
+        async move { get_challenge_by_id(&pool, input.challenge_id).await }
+    }
+
+    fn increment_challenge_attempts(
+        &self,
+        input: IncrementChallengeAttemptsInput,
+    ) -> impl Future<Output = Result<Option<ChallengeRecord>, StoreError>> + Send {
+        let pool = self.pool.clone();
+        async move {
+            sqlx::query(
+                "UPDATE harbor_challenges SET attempt_count = attempt_count + 1 WHERE id = ?1",
+            )
+            .bind(input.challenge_id.as_str())
+            .execute(&pool)
+            .await
+            .map_err(|error| map_sqlx_error(error, "increment_challenge_attempts"))?;
+
+            get_challenge_by_id(&pool, input.challenge_id).await
+        }
+    }
+
+    fn consume_challenge(
+        &self,
+        input: GetChallengeInput,
+        consumed_at: UnixTimestampMicros,
+    ) -> impl Future<Output = Result<Option<ChallengeRecord>, StoreError>> + Send {
+        let pool = self.pool.clone();
+        async move {
+            let result = sqlx::query(
+                "UPDATE harbor_challenges SET consumed_at_unix_micros = ?1 \
+                 WHERE id = ?2 AND consumed_at_unix_micros IS NULL",
+            )
+            .bind(consumed_at.as_i64())
+            .bind(input.challenge_id.as_str())
+            .execute(&pool)
+            .await
+            .map_err(|error| map_sqlx_error(error, "consume_challenge"))?;
+
+            if result.rows_affected() == 0 {
+                Ok(None)
+            } else {
+                get_challenge_by_id(&pool, input.challenge_id).await
+            }
+        }
+    }
+}
+
 async fn find_email_by_canonical(
     pool: &SqlitePool,
     email_canonical: CanonicalEmail,
@@ -412,7 +517,64 @@ fn password_from_row(
     })
 }
 
+async fn get_challenge_by_id(
+    pool: &SqlitePool,
+    challenge_id: ChallengeId,
+) -> Result<Option<ChallengeRecord>, StoreError> {
+    let row = sqlx::query(
+        "SELECT id, purpose, user_id, email_canonical, secret_hash, delivery, redirect_path, \
+                expires_at_unix_micros, consumed_at_unix_micros, attempt_count, max_attempts, \
+                resend_after_unix_micros, created_at_unix_micros, last_sent_at_unix_micros \
+         FROM harbor_challenges WHERE id = ?1",
+    )
+    .bind(challenge_id.as_str())
+    .fetch_optional(pool)
+    .await
+    .map_err(|error| map_sqlx_error(error, "get_challenge"))?;
+
+    row.map(|row| challenge_from_row(&row)).transpose()
+}
+
+fn challenge_from_row(row: &sqlx::sqlite::SqliteRow) -> Result<ChallengeRecord, StoreError> {
+    Ok(ChallengeRecord {
+        id: ChallengeId::try_new(get_string(row, "id")?).map_err(map_domain_error)?,
+        purpose: challenge_purpose_from_db(&get_string(row, "purpose")?)?,
+        user_id: get_optional_string(row, "user_id")?
+            .map(user_id)
+            .transpose()?,
+        email_canonical: CanonicalEmail::try_new(get_string(row, "email_canonical")?)
+            .map_err(map_domain_error)?,
+        secret_hash: TokenHash::try_new(get_bytes(row, "secret_hash")?)
+            .map_err(map_domain_error)?,
+        delivery: challenge_delivery_from_db(&get_string(row, "delivery")?)?,
+        redirect_path: get_optional_string(row, "redirect_path")?
+            .map(RedirectPath::try_new)
+            .transpose()
+            .map_err(map_domain_error)?,
+        expires_at: timestamp(get_i64(row, "expires_at_unix_micros")?)?,
+        consumed_at: optional_timestamp(get_optional_i64(row, "consumed_at_unix_micros")?)?,
+        attempt_count: get_i64(row, "attempt_count")?,
+        max_attempts: retry_budget(get_i64(row, "max_attempts")?)?,
+        resend_after: timestamp(get_i64(row, "resend_after_unix_micros")?)?,
+        created_at: timestamp(get_i64(row, "created_at_unix_micros")?)?,
+        last_sent_at: optional_timestamp(get_optional_i64(row, "last_sent_at_unix_micros")?)?,
+    })
+}
+
 fn get_string(row: &sqlx::sqlite::SqliteRow, column: &'static str) -> Result<String, StoreError> {
+    row.try_get(column)
+        .map_err(|error| map_sqlx_error(error, column))
+}
+
+fn get_optional_string(
+    row: &sqlx::sqlite::SqliteRow,
+    column: &'static str,
+) -> Result<Option<String>, StoreError> {
+    row.try_get(column)
+        .map_err(|error| map_sqlx_error(error, column))
+}
+
+fn get_bytes(row: &sqlx::sqlite::SqliteRow, column: &'static str) -> Result<Vec<u8>, StoreError> {
     row.try_get(column)
         .map_err(|error| map_sqlx_error(error, column))
 }
@@ -436,6 +598,54 @@ fn user_id(value: String) -> Result<UserId, StoreError> {
 
 fn timestamp(value: i64) -> Result<UnixTimestampMicros, StoreError> {
     UnixTimestampMicros::try_new(value).map_err(map_domain_error)
+}
+
+fn retry_budget(value: i64) -> Result<RetryBudget, StoreError> {
+    let value = usize::try_from(value)
+        .map_err(|_error| StoreError::with_detail(StoreErrorCode::CorruptData, "retry_budget"))?;
+    RetryBudget::try_new(value).map_err(map_domain_error)
+}
+
+fn challenge_purpose_to_db(value: ChallengePurpose) -> &'static str {
+    match value {
+        ChallengePurpose::SignupConfirmation => "signup_confirmation",
+        ChallengePurpose::EmailSignIn => "email_sign_in",
+        ChallengePurpose::PasswordReset => "password_reset",
+        _ => "unknown",
+    }
+}
+
+fn challenge_purpose_from_db(value: &str) -> Result<ChallengePurpose, StoreError> {
+    match value {
+        "signup_confirmation" => Ok(ChallengePurpose::SignupConfirmation),
+        "email_sign_in" => Ok(ChallengePurpose::EmailSignIn),
+        "password_reset" => Ok(ChallengePurpose::PasswordReset),
+        _ => Err(StoreError::with_detail(
+            StoreErrorCode::CorruptData,
+            "challenge_purpose",
+        )),
+    }
+}
+
+fn challenge_delivery_to_db(value: ChallengeDelivery) -> &'static str {
+    match value {
+        ChallengeDelivery::MagicLink => "magic_link",
+        ChallengeDelivery::OtpCode => "otp_code",
+        ChallengeDelivery::Both => "both",
+        _ => "unknown",
+    }
+}
+
+fn challenge_delivery_from_db(value: &str) -> Result<ChallengeDelivery, StoreError> {
+    match value {
+        "magic_link" => Ok(ChallengeDelivery::MagicLink),
+        "otp_code" => Ok(ChallengeDelivery::OtpCode),
+        "both" => Ok(ChallengeDelivery::Both),
+        _ => Err(StoreError::with_detail(
+            StoreErrorCode::CorruptData,
+            "challenge_delivery",
+        )),
+    }
 }
 
 fn optional_timestamp(value: Option<i64>) -> Result<Option<UnixTimestampMicros>, StoreError> {
@@ -467,10 +677,12 @@ impl fmt::Debug for SqliteAuthStore {
 #[cfg(test)]
 mod tests {
     use harbor_core::{
-        AuthEventId, CreateUserEmailInput, CreateUserInput, EmailAddress,
-        FindEmailByCanonicalInput, GetPasswordCredentialInput, GetUserInput, InsertPasswordInput,
-        MarkEmailVerifiedInput, PasswordCredentialStore, PasswordHashString, StoreErrorCode,
-        UnixTimestampMicros, UserEmailId, UserEmailStore, UserId, UserStore,
+        AuthEventId, ChallengeDelivery, ChallengeId, ChallengePurpose, ChallengeStore,
+        CreateChallengeInput, CreateUserEmailInput, CreateUserInput, EmailAddress,
+        FindEmailByCanonicalInput, GetChallengeInput, GetPasswordCredentialInput, GetUserInput,
+        IncrementChallengeAttemptsInput, InsertPasswordInput, MarkEmailVerifiedInput,
+        PasswordCredentialStore, PasswordHashString, RedirectPath, RetryBudget, StoreErrorCode,
+        TokenHash, UnixTimestampMicros, UserEmailId, UserEmailStore, UserId, UserStore,
     };
 
     use super::{SqliteAuthStore, SqliteStoreOptions};
@@ -497,6 +709,14 @@ mod tests {
 
     fn now() -> UnixTimestampMicros {
         UnixTimestampMicros::EPOCH
+    }
+
+    fn challenge_id() -> Result<ChallengeId, harbor_core::DomainError> {
+        ChallengeId::try_new("challenge00000001")
+    }
+
+    fn token_hash() -> Result<TokenHash, harbor_core::DomainError> {
+        TokenHash::try_new(vec![1, 2, 3, 4])
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -675,6 +895,80 @@ mod tests {
         assert_eq!(first.password_version, 1);
         assert_eq!(second.password_version, 2);
         assert_eq!(fetched, Some(second));
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn creates_increments_and_consumes_challenge() -> Result<(), Box<dyn std::error::Error>> {
+        let store = migrated_store().await?;
+        let user_id = user_id()?;
+        let email = EmailAddress::parse("user@example.com")?;
+        let expires_at = UnixTimestampMicros::try_new(600_000_000)?;
+        let consumed_at = UnixTimestampMicros::try_new(10)?;
+
+        store
+            .create_user(CreateUserInput {
+                id: user_id.clone(),
+                now: now(),
+            })
+            .await?;
+        let created = store
+            .create_challenge(CreateChallengeInput {
+                id: challenge_id()?,
+                purpose: ChallengePurpose::SignupConfirmation,
+                user_id: Some(user_id),
+                email_canonical: email.canonical().clone(),
+                secret_hash: token_hash()?,
+                delivery: ChallengeDelivery::Both,
+                redirect_path: Some(RedirectPath::try_new("/account")?),
+                expires_at,
+                max_attempts: RetryBudget::try_new(5)?,
+                resend_after: now(),
+                now: now(),
+            })
+            .await?;
+
+        let fetched = store
+            .get_challenge(GetChallengeInput {
+                challenge_id: created.id.clone(),
+            })
+            .await?;
+        assert_eq!(fetched, Some(created.clone()));
+
+        let incremented = store
+            .increment_challenge_attempts(IncrementChallengeAttemptsInput {
+                challenge_id: created.id.clone(),
+            })
+            .await?;
+        let incremented = match incremented {
+            Some(challenge) => challenge,
+            None => return Err("challenge should exist after increment".into()),
+        };
+        assert_eq!(incremented.attempt_count, 1);
+
+        let consumed = store
+            .consume_challenge(
+                GetChallengeInput {
+                    challenge_id: created.id.clone(),
+                },
+                consumed_at,
+            )
+            .await?;
+        let consumed = match consumed {
+            Some(challenge) => challenge,
+            None => return Err("challenge should be consumed once".into()),
+        };
+        assert_eq!(consumed.consumed_at, Some(consumed_at));
+
+        let second_consume = store
+            .consume_challenge(
+                GetChallengeInput {
+                    challenge_id: created.id,
+                },
+                consumed_at,
+            )
+            .await?;
+        assert_eq!(second_consume, None);
         Ok(())
     }
 
