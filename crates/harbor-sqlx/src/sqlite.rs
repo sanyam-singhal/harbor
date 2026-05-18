@@ -7,12 +7,14 @@ use std::time::Duration;
 
 use harbor_core::{
     CanonicalEmail, ChallengeDelivery, ChallengeId, ChallengePurpose, ChallengeRecord,
-    ChallengeStore, CreateChallengeInput, CreateUserEmailInput, CreateUserInput, DomainError,
-    FindEmailByCanonicalInput, GetChallengeInput, GetPasswordCredentialInput, GetUserInput,
+    ChallengeStore, CreateChallengeInput, CreateSessionInput, CreateUserEmailInput,
+    CreateUserInput, DeleteExpiredSessionsInput, DomainError, FindEmailByCanonicalInput,
+    GetChallengeInput, GetPasswordCredentialInput, GetSessionInput, GetUserInput,
     IncrementChallengeAttemptsInput, InsertPasswordInput, MarkEmailVerifiedInput,
-    PasswordCredentialRecord, PasswordCredentialStore, RedirectPath, RetryBudget, StoreError,
-    StoreErrorCode, TokenHash, UnixTimestampMicros, UserEmailRecord, UserEmailStore, UserId,
-    UserRecord, UserStore,
+    PasswordCredentialRecord, PasswordCredentialStore, RedirectPath, RetryBudget,
+    RevokeSessionInput, RevokeUserSessionsInput, SessionId, SessionRecord, SessionStore,
+    StoreError, StoreErrorCode, TokenHash, UnixTimestampMicros, UpdateSessionLastSeenInput,
+    UserEmailRecord, UserEmailStore, UserId, UserRecord, UserStore,
 };
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
 use sqlx::{Row, SqlitePool};
@@ -463,6 +465,131 @@ impl ChallengeStore for SqliteAuthStore {
     }
 }
 
+impl SessionStore for SqliteAuthStore {
+    fn create_session(
+        &self,
+        input: CreateSessionInput,
+    ) -> impl Future<Output = Result<SessionRecord, StoreError>> + Send {
+        let pool = self.pool.clone();
+        async move {
+            sqlx::query(
+                "INSERT INTO harbor_sessions \
+                 (id, user_id, token_hash, created_at_unix_micros, last_seen_at_unix_micros, \
+                  idle_expires_at_unix_micros, absolute_expires_at_unix_micros, \
+                  revoked_at_unix_micros, ip_hash, user_agent_hash) \
+                 VALUES (?1, ?2, ?3, ?4, ?4, ?5, ?6, NULL, ?7, ?8)",
+            )
+            .bind(input.id.as_str())
+            .bind(input.user_id.as_str())
+            .bind(input.token_hash.as_bytes())
+            .bind(input.created_at.as_i64())
+            .bind(input.idle_expires_at.as_i64())
+            .bind(input.absolute_expires_at.as_i64())
+            .bind(input.ip_hash.as_ref().map(TokenHash::as_bytes))
+            .bind(input.user_agent_hash.as_ref().map(TokenHash::as_bytes))
+            .execute(&pool)
+            .await
+            .map_err(|error| map_sqlx_error(error, "create_session"))?;
+
+            Ok(SessionRecord {
+                id: input.id,
+                user_id: input.user_id,
+                token_hash: input.token_hash,
+                created_at: input.created_at,
+                last_seen_at: input.created_at,
+                idle_expires_at: input.idle_expires_at,
+                absolute_expires_at: input.absolute_expires_at,
+                revoked_at: None,
+                ip_hash: input.ip_hash,
+                user_agent_hash: input.user_agent_hash,
+            })
+        }
+    }
+
+    fn get_session_by_token_hash(
+        &self,
+        input: GetSessionInput,
+    ) -> impl Future<Output = Result<Option<SessionRecord>, StoreError>> + Send {
+        let pool = self.pool.clone();
+        async move { get_session_by_token_hash(&pool, input.token_hash).await }
+    }
+
+    fn update_session_last_seen(
+        &self,
+        input: UpdateSessionLastSeenInput,
+    ) -> impl Future<Output = Result<Option<SessionRecord>, StoreError>> + Send {
+        let pool = self.pool.clone();
+        async move {
+            sqlx::query("UPDATE harbor_sessions SET last_seen_at_unix_micros = ?1 WHERE id = ?2")
+                .bind(input.last_seen_at.as_i64())
+                .bind(input.session_id.as_str())
+                .execute(&pool)
+                .await
+                .map_err(|error| map_sqlx_error(error, "update_session_last_seen"))?;
+
+            get_session_by_id(&pool, input.session_id).await
+        }
+    }
+
+    fn revoke_session(
+        &self,
+        input: RevokeSessionInput,
+    ) -> impl Future<Output = Result<Option<SessionRecord>, StoreError>> + Send {
+        let pool = self.pool.clone();
+        async move {
+            sqlx::query("UPDATE harbor_sessions SET revoked_at_unix_micros = ?1 WHERE id = ?2")
+                .bind(input.revoked_at.as_i64())
+                .bind(input.session_id.as_str())
+                .execute(&pool)
+                .await
+                .map_err(|error| map_sqlx_error(error, "revoke_session"))?;
+
+            get_session_by_id(&pool, input.session_id).await
+        }
+    }
+
+    fn revoke_user_sessions(
+        &self,
+        input: RevokeUserSessionsInput,
+    ) -> impl Future<Output = Result<u64, StoreError>> + Send {
+        let pool = self.pool.clone();
+        async move {
+            let result = sqlx::query(
+                "UPDATE harbor_sessions SET revoked_at_unix_micros = ?1 \
+                 WHERE user_id = ?2 AND revoked_at_unix_micros IS NULL",
+            )
+            .bind(input.revoked_at.as_i64())
+            .bind(input.user_id.as_str())
+            .execute(&pool)
+            .await
+            .map_err(|error| map_sqlx_error(error, "revoke_user_sessions"))?;
+
+            Ok(result.rows_affected())
+        }
+    }
+
+    fn delete_expired_sessions(
+        &self,
+        input: DeleteExpiredSessionsInput,
+    ) -> impl Future<Output = Result<u64, StoreError>> + Send {
+        let pool = self.pool.clone();
+        async move {
+            let result = sqlx::query(
+                "DELETE FROM harbor_sessions \
+                 WHERE revoked_at_unix_micros IS NOT NULL \
+                    OR idle_expires_at_unix_micros <= ?1 \
+                    OR absolute_expires_at_unix_micros <= ?1",
+            )
+            .bind(input.now.as_i64())
+            .execute(&pool)
+            .await
+            .map_err(|error| map_sqlx_error(error, "delete_expired_sessions"))?;
+
+            Ok(result.rows_affected())
+        }
+    }
+}
+
 async fn find_email_by_canonical(
     pool: &SqlitePool,
     email_canonical: CanonicalEmail,
@@ -561,6 +688,63 @@ fn challenge_from_row(row: &sqlx::sqlite::SqliteRow) -> Result<ChallengeRecord, 
     })
 }
 
+async fn get_session_by_token_hash(
+    pool: &SqlitePool,
+    token_hash: TokenHash,
+) -> Result<Option<SessionRecord>, StoreError> {
+    let row = sqlx::query(
+        "SELECT id, user_id, token_hash, created_at_unix_micros, last_seen_at_unix_micros, \
+                idle_expires_at_unix_micros, absolute_expires_at_unix_micros, \
+                revoked_at_unix_micros, ip_hash, user_agent_hash \
+         FROM harbor_sessions WHERE token_hash = ?1",
+    )
+    .bind(token_hash.as_bytes())
+    .fetch_optional(pool)
+    .await
+    .map_err(|error| map_sqlx_error(error, "get_session_by_token_hash"))?;
+
+    row.map(|row| session_from_row(&row)).transpose()
+}
+
+async fn get_session_by_id(
+    pool: &SqlitePool,
+    session_id: SessionId,
+) -> Result<Option<SessionRecord>, StoreError> {
+    let row = sqlx::query(
+        "SELECT id, user_id, token_hash, created_at_unix_micros, last_seen_at_unix_micros, \
+                idle_expires_at_unix_micros, absolute_expires_at_unix_micros, \
+                revoked_at_unix_micros, ip_hash, user_agent_hash \
+         FROM harbor_sessions WHERE id = ?1",
+    )
+    .bind(session_id.as_str())
+    .fetch_optional(pool)
+    .await
+    .map_err(|error| map_sqlx_error(error, "get_session_by_id"))?;
+
+    row.map(|row| session_from_row(&row)).transpose()
+}
+
+fn session_from_row(row: &sqlx::sqlite::SqliteRow) -> Result<SessionRecord, StoreError> {
+    Ok(SessionRecord {
+        id: SessionId::try_new(get_string(row, "id")?).map_err(map_domain_error)?,
+        user_id: user_id(get_string(row, "user_id")?)?,
+        token_hash: TokenHash::try_new(get_bytes(row, "token_hash")?).map_err(map_domain_error)?,
+        created_at: timestamp(get_i64(row, "created_at_unix_micros")?)?,
+        last_seen_at: timestamp(get_i64(row, "last_seen_at_unix_micros")?)?,
+        idle_expires_at: timestamp(get_i64(row, "idle_expires_at_unix_micros")?)?,
+        absolute_expires_at: timestamp(get_i64(row, "absolute_expires_at_unix_micros")?)?,
+        revoked_at: optional_timestamp(get_optional_i64(row, "revoked_at_unix_micros")?)?,
+        ip_hash: get_optional_bytes(row, "ip_hash")?
+            .map(TokenHash::try_new)
+            .transpose()
+            .map_err(map_domain_error)?,
+        user_agent_hash: get_optional_bytes(row, "user_agent_hash")?
+            .map(TokenHash::try_new)
+            .transpose()
+            .map_err(map_domain_error)?,
+    })
+}
+
 fn get_string(row: &sqlx::sqlite::SqliteRow, column: &'static str) -> Result<String, StoreError> {
     row.try_get(column)
         .map_err(|error| map_sqlx_error(error, column))
@@ -575,6 +759,14 @@ fn get_optional_string(
 }
 
 fn get_bytes(row: &sqlx::sqlite::SqliteRow, column: &'static str) -> Result<Vec<u8>, StoreError> {
+    row.try_get(column)
+        .map_err(|error| map_sqlx_error(error, column))
+}
+
+fn get_optional_bytes(
+    row: &sqlx::sqlite::SqliteRow,
+    column: &'static str,
+) -> Result<Option<Vec<u8>>, StoreError> {
     row.try_get(column)
         .map_err(|error| map_sqlx_error(error, column))
 }
@@ -678,11 +870,13 @@ impl fmt::Debug for SqliteAuthStore {
 mod tests {
     use harbor_core::{
         AuthEventId, ChallengeDelivery, ChallengeId, ChallengePurpose, ChallengeStore,
-        CreateChallengeInput, CreateUserEmailInput, CreateUserInput, EmailAddress,
-        FindEmailByCanonicalInput, GetChallengeInput, GetPasswordCredentialInput, GetUserInput,
-        IncrementChallengeAttemptsInput, InsertPasswordInput, MarkEmailVerifiedInput,
-        PasswordCredentialStore, PasswordHashString, RedirectPath, RetryBudget, StoreErrorCode,
-        TokenHash, UnixTimestampMicros, UserEmailId, UserEmailStore, UserId, UserStore,
+        CreateChallengeInput, CreateSessionInput, CreateUserEmailInput, CreateUserInput,
+        DeleteExpiredSessionsInput, EmailAddress, FindEmailByCanonicalInput, GetChallengeInput,
+        GetPasswordCredentialInput, GetSessionInput, GetUserInput, IncrementChallengeAttemptsInput,
+        InsertPasswordInput, MarkEmailVerifiedInput, PasswordCredentialStore, PasswordHashString,
+        RedirectPath, RetryBudget, RevokeSessionInput, RevokeUserSessionsInput, SessionId,
+        SessionStore, StoreErrorCode, TokenHash, UnixTimestampMicros, UpdateSessionLastSeenInput,
+        UserEmailId, UserEmailStore, UserId, UserStore,
     };
 
     use super::{SqliteAuthStore, SqliteStoreOptions};
@@ -717,6 +911,14 @@ mod tests {
 
     fn token_hash() -> Result<TokenHash, harbor_core::DomainError> {
         TokenHash::try_new(vec![1, 2, 3, 4])
+    }
+
+    fn second_token_hash() -> Result<TokenHash, harbor_core::DomainError> {
+        TokenHash::try_new(vec![5, 6, 7, 8])
+    }
+
+    fn session_id() -> Result<SessionId, harbor_core::DomainError> {
+        SessionId::try_new("session000000001")
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -969,6 +1171,99 @@ mod tests {
             )
             .await?;
         assert_eq!(second_consume, None);
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn creates_refreshes_revokes_and_deletes_sessions()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let store = migrated_store().await?;
+        let user_id = user_id()?;
+        let session_id = session_id()?;
+        let token_hash = token_hash()?;
+        let refreshed_at = UnixTimestampMicros::try_new(5)?;
+        let idle_expires_at = UnixTimestampMicros::try_new(10)?;
+        let absolute_expires_at = UnixTimestampMicros::try_new(20)?;
+        let cleanup_at = UnixTimestampMicros::try_new(30)?;
+
+        store
+            .create_user(CreateUserInput {
+                id: user_id.clone(),
+                now: now(),
+            })
+            .await?;
+        let created = store
+            .create_session(CreateSessionInput {
+                id: session_id.clone(),
+                user_id: user_id.clone(),
+                token_hash: token_hash.clone(),
+                created_at: now(),
+                idle_expires_at,
+                absolute_expires_at,
+                ip_hash: Some(second_token_hash()?),
+                user_agent_hash: None,
+            })
+            .await?;
+        let fetched = store
+            .get_session_by_token_hash(GetSessionInput {
+                token_hash: token_hash.clone(),
+            })
+            .await?;
+        assert_eq!(fetched, Some(created));
+
+        let refreshed = store
+            .update_session_last_seen(UpdateSessionLastSeenInput {
+                session_id: session_id.clone(),
+                last_seen_at: refreshed_at,
+            })
+            .await?;
+        let refreshed = match refreshed {
+            Some(session) => session,
+            None => return Err("session should refresh".into()),
+        };
+        assert_eq!(refreshed.last_seen_at, refreshed_at);
+
+        let revoked = store
+            .revoke_session(RevokeSessionInput {
+                session_id: session_id.clone(),
+                revoked_at: refreshed_at,
+            })
+            .await?;
+        let revoked = match revoked {
+            Some(session) => session,
+            None => return Err("session should revoke".into()),
+        };
+        assert_eq!(revoked.revoked_at, Some(refreshed_at));
+
+        let deleted = store
+            .delete_expired_sessions(DeleteExpiredSessionsInput { now: cleanup_at })
+            .await?;
+        assert_eq!(deleted, 1);
+
+        let missing = store
+            .get_session_by_token_hash(GetSessionInput { token_hash })
+            .await?;
+        assert_eq!(missing, None);
+
+        store
+            .create_session(CreateSessionInput {
+                id: SessionId::try_new("session000000002")?,
+                user_id: user_id.clone(),
+                token_hash: second_token_hash()?,
+                created_at: now(),
+                idle_expires_at,
+                absolute_expires_at,
+                ip_hash: None,
+                user_agent_hash: None,
+            })
+            .await?;
+        let revoked_count = store
+            .revoke_user_sessions(RevokeUserSessionsInput {
+                user_id,
+                revoked_at: cleanup_at,
+            })
+            .await?;
+        assert_eq!(revoked_count, 1);
         Ok(())
     }
 
