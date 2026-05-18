@@ -8,6 +8,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use harbor_core::{RandomError, SecretGenerator, UnixTimestampMicros};
 
+pub mod store_contracts;
+
 /// Version of the `harbor-test-support` crate.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 

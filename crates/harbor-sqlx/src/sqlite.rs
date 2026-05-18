@@ -1439,6 +1439,14 @@ mod tests {
         Ok(())
     }
 
+    #[tokio::test(flavor = "current_thread")]
+    async fn sqlite_store_satisfies_shared_auth_store_contracts()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let store = migrated_store().await?;
+
+        harbor_test_support::store_contracts::run_auth_store_contracts(store).await
+    }
+
     #[test]
     fn auth_event_id_is_available_for_later_store_slices() -> Result<(), harbor_core::DomainError> {
         let id = AuthEventId::try_new("event00000000001")?;

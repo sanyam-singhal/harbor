@@ -13,6 +13,7 @@ harbor-core.workspace = true
 sqlx.workspace = true
 
 [dev-dependencies]
+harbor-test-support.workspace = true
 tokio.workspace = true
 
 [lints]

@@ -473,6 +473,7 @@ name = "harbor-sqlx"
 version = "0.1.0"
 dependencies = [
  "harbor-core",
+ "harbor-test-support",
  "sqlx",
  "tokio",
 ]
