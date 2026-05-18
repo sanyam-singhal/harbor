@@ -4,9 +4,12 @@ use std::env;
 
 use harbor_core::{
     Argon2Params, Argon2PasswordHasher, AuthService, ChallengeDelivery, ChallengeId, Clock,
-    HmacSecretKey, PasswordPolicy, RedirectPath, SecretToken, SystemClock, SystemSecretGenerator,
+    HmacSecretKey, MailError, PasswordPolicy, RedirectPath, SecretToken, SystemClock,
+    SystemSecretGenerator,
 };
-use harbor_email::RecordingMailer;
+#[cfg(feature = "email-resend")]
+use harbor_email::ResendMailer;
+use harbor_email::{AuthEmail, AuthMailer, MailDelivery, RecordingMailer};
 use harbor_leptos::{CookieDefaults, CsrfRequest, Harbor, build_csrf_cookie, issue_csrf_token};
 use harbor_sqlx::{SqliteAuthStore, SqliteStoreOptions};
 
@@ -22,13 +25,14 @@ const DEFAULT_DEMO_ADDR: &str = "127.0.0.1:3000";
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let settings = DemoSettings::from_env();
+    let settings = DemoSettings::from_env()?;
     let store = SqliteAuthStore::connect_and_migrate(
         &settings.database_url,
         sqlite_options_for_url(&settings.database_url),
     )
     .await?;
-    let mailer = RecordingMailer::new();
+    let recording_mailer = RecordingMailer::new();
+    let mailer = DemoMailer::from_mode(settings.email_mode, recording_mailer.clone())?;
     let harbor = Harbor::builder()
         .with_store(store.clone())
         .with_mailer(mailer.clone())
@@ -46,11 +50,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .session_cookie_name()
             .as_str()
     );
-    println!("Demo mail mode: recording");
+    println!("Demo mail mode: {}", mailer.mode_name());
     if settings.run_smoke {
         run_recording_smoke(
             store.clone(),
             mailer.clone(),
+            recording_mailer.clone(),
             harbor.config(),
             settings.hmac_key.clone(),
         )
@@ -62,7 +67,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         run_browser_smoke_server(
             &settings.demo_addr,
             service,
-            mailer,
+            recording_mailer,
             harbor.config().clone(),
         )
         .await?;
@@ -75,14 +80,15 @@ struct DemoSettings {
     database_url: String,
     public_base_url: String,
     hmac_key: Vec<u8>,
+    email_mode: DemoEmailMode,
     run_smoke: bool,
     run_browser_smoke: bool,
     demo_addr: String,
 }
 
 impl DemoSettings {
-    fn from_env() -> Self {
-        Self {
+    fn from_env() -> Result<Self, Box<dyn std::error::Error>> {
+        Ok(Self {
             database_url: env::var("HARBOR_DATABASE_URL")
                 .unwrap_or_else(|_error| DEFAULT_DATABASE_URL.to_owned()),
             public_base_url: env::var("HARBOR_PUBLIC_BASE_URL")
@@ -90,6 +96,7 @@ impl DemoSettings {
             hmac_key: env::var("HARBOR_HMAC_KEY")
                 .map(|value| value.into_bytes())
                 .unwrap_or_else(|_error| vec![42; 32]),
+            email_mode: DemoEmailMode::from_env()?,
             run_smoke: env::var("HARBOR_DEMO_SMOKE")
                 .map(|value| value == "1" || value == "true")
                 .unwrap_or(false),
@@ -98,6 +105,96 @@ impl DemoSettings {
                 .unwrap_or(false),
             demo_addr: env::var("HARBOR_DEMO_ADDR")
                 .unwrap_or_else(|_error| DEFAULT_DEMO_ADDR.to_owned()),
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DemoEmailMode {
+    Recording,
+    Resend,
+}
+
+impl DemoEmailMode {
+    fn from_env() -> Result<Self, Box<dyn std::error::Error>> {
+        match env::var("HARBOR_EMAIL_MODE")
+            .unwrap_or_else(|_error| "recording".to_owned())
+            .as_str()
+        {
+            "recording" | "log" => Ok(Self::Recording),
+            "resend" => Ok(Self::Resend),
+            _ => Err("HARBOR_EMAIL_MODE must be recording, log, or resend".into()),
+        }
+    }
+}
+
+#[derive(Clone)]
+enum DemoMailer {
+    Recording(RecordingMailer),
+    #[cfg(feature = "email-resend")]
+    Resend {
+        recording: RecordingMailer,
+        resend: ResendMailer,
+    },
+}
+
+impl DemoMailer {
+    fn from_mode(
+        mode: DemoEmailMode,
+        recording: RecordingMailer,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
+        match mode {
+            DemoEmailMode::Recording => Ok(Self::Recording(recording)),
+            DemoEmailMode::Resend => Self::resend(recording),
+        }
+    }
+
+    #[cfg(feature = "email-resend")]
+    fn resend(recording: RecordingMailer) -> Result<Self, Box<dyn std::error::Error>> {
+        Ok(Self::Resend {
+            recording,
+            resend: ResendMailer::from_env()?,
+        })
+    }
+
+    #[cfg(not(feature = "email-resend"))]
+    fn resend(_recording: RecordingMailer) -> Result<Self, Box<dyn std::error::Error>> {
+        Err(
+            "HARBOR_EMAIL_MODE=resend requires `cargo run -p harbor-demo --features email-resend`"
+                .into(),
+        )
+    }
+
+    fn mode_name(&self) -> &'static str {
+        match self {
+            Self::Recording(_recording) => "recording",
+            #[cfg(feature = "email-resend")]
+            Self::Resend {
+                recording: _recording,
+                resend: _resend,
+            } => "resend",
+        }
+    }
+}
+
+impl std::fmt::Debug for DemoMailer {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("DemoMailer")
+            .field("mode", &self.mode_name())
+            .finish_non_exhaustive()
+    }
+}
+
+impl AuthMailer for DemoMailer {
+    async fn send_auth_email(&self, email: AuthEmail) -> Result<MailDelivery, MailError> {
+        match self {
+            Self::Recording(recording) => recording.send_auth_email(email).await,
+            #[cfg(feature = "email-resend")]
+            Self::Resend { recording, resend } => {
+                recording.send_auth_email(email.clone()).await?;
+                resend.send_auth_email(email).await
+            }
         }
     }
 }
@@ -112,7 +209,8 @@ fn sqlite_options_for_url(database_url: &str) -> SqliteStoreOptions {
 
 async fn run_recording_smoke(
     store: SqliteAuthStore,
-    mailer: RecordingMailer,
+    mailer: DemoMailer,
+    recording_mailer: RecordingMailer,
     config: &harbor_leptos::HarborConfig,
     hmac_key: Vec<u8>,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -138,7 +236,7 @@ async fn run_recording_smoke(
         },
     )
     .await?;
-    let confirmation = latest_link_query(&mailer)?;
+    let confirmation = latest_link_query(&recording_mailer)?;
     harbor_leptos::handle_confirm_email_link(&service, confirmation).await?;
 
     let password_signin = harbor_leptos::signin_with_password(
@@ -164,7 +262,7 @@ async fn run_recording_smoke(
         Some(RedirectPath::try_new("/account")?),
     )
     .await?;
-    let email_link = latest_link_query(&mailer)?;
+    let email_link = latest_link_query(&recording_mailer)?;
     let email_signin =
         harbor_leptos::handle_email_link_signin(&service, config, email_link).await?;
     let email_session_pair = match email_signin.set_cookie.as_deref() {
@@ -185,7 +283,7 @@ async fn run_recording_smoke(
         },
     )
     .await?;
-    let reset_link = latest_link_query(&mailer)?;
+    let reset_link = latest_link_query(&recording_mailer)?;
     harbor_leptos::reset_password(
         &service,
         config,

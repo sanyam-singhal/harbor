@@ -1,8 +1,9 @@
 //! Leptos-facing auth workflow wrappers.
 
 use harbor_core::{
-    AuthError, AuthErrorCode, AuthService, AuthStore, ChallengeDelivery, ChallengeId,
-    ChallengePurpose, Clock, PasswordBlocklist, RedirectPath, SecretGenerator, SecretToken,
+    AuthError, AuthErrorCode, AuthRateLimitScope, AuthService, AuthStore, ChallengeDelivery,
+    ChallengeId, ChallengePurpose, Clock, EmailAddress, PasswordBlocklist, RateLimitInput,
+    RedirectPath, RetryBudget, SecretGenerator, SecretToken,
 };
 use harbor_email::{
     AuthMailer, ChallengeEmailInput, EmailRecipient, SecretUrl, render_challenge_email,
@@ -59,6 +60,14 @@ where
     M: AuthMailer,
 {
     validate_csrf_request(config, &csrf)?;
+    enforce_email_rate_limit(
+        service,
+        config,
+        AuthRateLimitScope::Signup,
+        &input.email,
+        config.rate_limits().signup,
+    )
+    .await?;
     let signup = service.sign_up_with_password(input).await?;
     let challenge = service
         .create_email_challenge(harbor_core::EmailChallengeInput {
@@ -93,6 +102,14 @@ where
     B: PasswordBlocklist,
 {
     validate_csrf_request(config, &csrf)?;
+    enforce_email_rate_limit(
+        service,
+        config,
+        AuthRateLimitScope::PasswordSignin,
+        &input.email,
+        config.rate_limits().password_signin,
+    )
+    .await?;
     let signin = service.sign_in_with_password(input).await?;
     let set_cookie = build_session_cookie(config.cookie_defaults(), &signin.session_token, None)
         .map_err(AuthError::from)?;
@@ -124,6 +141,14 @@ where
     M: AuthMailer,
 {
     validate_csrf_request(config, &csrf)?;
+    enforce_email_rate_limit(
+        service,
+        config,
+        AuthRateLimitScope::EmailChallenge,
+        &email,
+        config.rate_limits().email_challenge,
+    )
+    .await?;
     let challenge = service
         .create_email_challenge(harbor_core::EmailChallengeInput {
             purpose: ChallengePurpose::EmailSignIn,
@@ -161,6 +186,14 @@ where
     M: AuthMailer,
 {
     validate_csrf_request(config, &csrf)?;
+    enforce_email_rate_limit(
+        service,
+        config,
+        AuthRateLimitScope::EmailChallenge,
+        &email,
+        config.rate_limits().email_challenge,
+    )
+    .await?;
     let challenge = service
         .create_email_challenge(harbor_core::EmailChallengeInput {
             purpose: ChallengePurpose::EmailSignIn,
@@ -226,6 +259,14 @@ where
     M: AuthMailer,
 {
     validate_csrf_request(config, &csrf)?;
+    enforce_email_rate_limit(
+        service,
+        config,
+        AuthRateLimitScope::PasswordReset,
+        &input.email,
+        config.rate_limits().password_reset,
+    )
+    .await?;
     let reset = service.request_password_reset(input).await?;
     if let Some(challenge) = reset.challenge {
         send_challenge_email(mailer, config, challenge, "/auth/reset-password").await?;
@@ -325,6 +366,31 @@ fn validate_csrf_request(config: &HarborConfig, csrf: &CsrfRequest) -> Result<()
         csrf.cookie_header.as_deref(),
         csrf.csrf_header.as_deref(),
     )
+}
+
+async fn enforce_email_rate_limit<S, C, G, B>(
+    service: &AuthService<S, C, G, B>,
+    config: &HarborConfig,
+    scope: AuthRateLimitScope,
+    email: &str,
+    max_count: RetryBudget,
+) -> Result<(), AuthError>
+where
+    S: AuthStore,
+    C: Clock,
+    G: SecretGenerator,
+    B: PasswordBlocklist,
+{
+    let email = EmailAddress::parse(email.to_owned())
+        .map_err(|_error| AuthError::new(AuthErrorCode::InvalidCredentials))?;
+    service
+        .enforce_rate_limit(RateLimitInput {
+            scope,
+            key: email.canonical().as_str().to_owned(),
+            max_count,
+            window: config.rate_limits().window,
+        })
+        .await
 }
 
 async fn send_challenge_email<M: AuthMailer>(

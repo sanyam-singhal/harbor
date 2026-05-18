@@ -8,6 +8,10 @@ repository.workspace = true
 authors.workspace = true
 publish = false
 
+[features]
+default = []
+email-resend = ["harbor-email/email-resend"]
+
 [dependencies]
 harbor-core.workspace = true
 harbor-email.workspace = true

@@ -1,20 +1,37 @@
 use harbor_core::{
-    Argon2Params, Argon2PasswordHasher, ChallengeDelivery, ChallengeId, HmacSecretKey,
-    PasswordPolicy, PasswordSignInInput, PasswordSignUpInput, RedirectPath,
-    RequestPasswordResetInput, ResetPasswordInput, SecretToken, SystemClock, SystemSecretGenerator,
+    Argon2Params, Argon2PasswordHasher, AuthError, AuthErrorCode, ChallengeDelivery, ChallengeId,
+    HmacSecretKey, PasswordPolicy, PasswordSignInInput, PasswordSignUpInput, RedirectPath,
+    RequestPasswordResetInput, ResetPasswordInput, RetryBudget, SecretToken, SystemClock,
+    SystemSecretGenerator, UnixTimestampMicros,
 };
 use harbor_email::RecordingMailer;
 use harbor_sqlx::{SqliteAuthStore, SqliteStoreOptions};
 
 use super::*;
 use crate::{
-    AuthLinkQuery, CookieDefaults, Harbor, build_csrf_cookie, handle_confirm_email_link,
-    handle_email_link_signin, handle_reset_password_link, issue_csrf_token,
+    AuthLinkQuery, AuthRateLimits, CookieDefaults, Harbor, build_csrf_cookie,
+    handle_confirm_email_link, handle_email_link_signin, handle_reset_password_link,
+    issue_csrf_token,
 };
 
 type TestService = AuthService<SqliteAuthStore, SystemClock, SystemSecretGenerator>;
 
 async fn test_parts() -> Result<
+    (
+        TestService,
+        RecordingMailer,
+        HarborConfig,
+        CsrfRequest,
+        String,
+    ),
+    Box<dyn std::error::Error>,
+> {
+    test_parts_with_rate_limits(None).await
+}
+
+async fn test_parts_with_rate_limits(
+    rate_limits: Option<AuthRateLimits>,
+) -> Result<
     (
         TestService,
         RecordingMailer,
@@ -38,13 +55,17 @@ async fn test_parts() -> Result<
         ),
     );
     let mailer = RecordingMailer::new();
-    let harbor = Harbor::builder()
+    let builder = Harbor::builder()
         .with_store(())
         .with_mailer(mailer.clone())
         .with_public_base_url("http://localhost:3000")?
         .with_cookie_defaults(CookieDefaults::development())?
-        .with_hmac_secret_key(vec![7; 32])?
-        .finish()?;
+        .with_hmac_secret_key(vec![7; 32])?;
+    let builder = match rate_limits {
+        Some(rate_limits) => builder.with_rate_limits(rate_limits)?,
+        None => builder,
+    };
+    let harbor = builder.finish()?;
     let csrf = issue_csrf_token(&SystemSecretGenerator)?;
     let csrf_cookie = build_csrf_cookie(harbor.config().cookie_defaults(), &csrf, None)?;
     let csrf_pair = first_cookie_pair(&csrf_cookie)?.to_owned();
@@ -256,6 +277,122 @@ async fn passive_session_helpers_accept_absent_cookies() -> Result<(), Box<dyn s
     Ok(())
 }
 
+#[tokio::test]
+async fn state_changing_workflows_apply_email_rate_limits() -> Result<(), Box<dyn std::error::Error>>
+{
+    let limits = AuthRateLimits {
+        signup: RetryBudget::try_new(1)?,
+        password_signin: RetryBudget::try_new(1)?,
+        email_challenge: RetryBudget::try_new(1)?,
+        password_reset: RetryBudget::try_new(1)?,
+        window: UnixTimestampMicros::try_new(60_000_000)?,
+    };
+    let (service, mailer, config, csrf, _csrf_pair) =
+        test_parts_with_rate_limits(Some(limits)).await?;
+    let email = "limited@example.com".to_owned();
+    let password = "correct horse battery staple".to_owned();
+
+    signup_with_password(
+        &service,
+        &mailer,
+        &config,
+        csrf.clone(),
+        PasswordSignUpInput {
+            email: email.clone(),
+            password: password.clone(),
+        },
+    )
+    .await?;
+    assert_rate_limited(
+        signup_with_password(
+            &service,
+            &mailer,
+            &config,
+            csrf.clone(),
+            PasswordSignUpInput {
+                email: email.clone(),
+                password: password.clone(),
+            },
+        )
+        .await,
+    )?;
+    handle_confirm_email_link(&service, latest_link_query(&mailer)?).await?;
+
+    signin_with_password(
+        &service,
+        &config,
+        csrf.clone(),
+        PasswordSignInInput {
+            email: email.clone(),
+            password: password.clone(),
+            redirect_path: None,
+        },
+    )
+    .await?;
+    assert_rate_limited(
+        signin_with_password(
+            &service,
+            &config,
+            csrf.clone(),
+            PasswordSignInInput {
+                email: email.clone(),
+                password,
+                redirect_path: None,
+            },
+        )
+        .await,
+    )?;
+
+    request_email_signin(
+        &service,
+        &mailer,
+        &config,
+        csrf.clone(),
+        "limited-link@example.com".to_owned(),
+        None,
+    )
+    .await?;
+    assert_rate_limited(
+        request_email_signin(
+            &service,
+            &mailer,
+            &config,
+            csrf.clone(),
+            "limited-link@example.com".to_owned(),
+            None,
+        )
+        .await,
+    )?;
+
+    request_password_reset(
+        &service,
+        &mailer,
+        &config,
+        csrf.clone(),
+        RequestPasswordResetInput {
+            email: email.clone(),
+            delivery: ChallengeDelivery::MagicLink,
+            redirect_path: None,
+        },
+    )
+    .await?;
+    assert_rate_limited(
+        request_password_reset(
+            &service,
+            &mailer,
+            &config,
+            csrf,
+            RequestPasswordResetInput {
+                email,
+                delivery: ChallengeDelivery::MagicLink,
+                redirect_path: None,
+            },
+        )
+        .await,
+    )?;
+    Ok(())
+}
+
 #[test]
 fn reset_link_handler_validates_and_preserves_safe_redirects()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -293,6 +430,14 @@ fn first_cookie_pair(set_cookie: &str) -> Result<&str, Box<dyn std::error::Error
     match set_cookie.split(';').next() {
         Some(value) => Ok(value),
         None => Err("set-cookie should include a pair".into()),
+    }
+}
+
+fn assert_rate_limited<T>(result: Result<T, AuthError>) -> Result<(), Box<dyn std::error::Error>> {
+    match result {
+        Err(error) if error.code() == AuthErrorCode::RateLimited => Ok(()),
+        Err(error) => Err(format!("expected rate_limited, got {}", error.code().as_str()).into()),
+        Ok(_) => Err("expected rate limit error".into()),
     }
 }
 

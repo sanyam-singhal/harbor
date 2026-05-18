@@ -35,11 +35,11 @@ pub use secret::{
     HmacSecretKey, SecretHashPurpose, constant_time_token_hash_eq, hash_secret, hash_secret_token,
 };
 pub use service::{
-    AuthService, CurrentSession, EmailChallengeInput, EmailChallengeOutput,
+    AuthRateLimitScope, AuthService, CurrentSession, EmailChallengeInput, EmailChallengeOutput,
     EmailChallengeSignInInput, EmailChallengeSignInOutput, PasswordSignInInput,
-    PasswordSignInOutput, PasswordSignUpInput, PasswordSignUpOutput, RequestPasswordResetInput,
-    RequestPasswordResetOutput, ResetPasswordInput, ResetPasswordOutput, VerifiedChallenge,
-    VerifyChallengeInput,
+    PasswordSignInOutput, PasswordSignUpInput, PasswordSignUpOutput, RateLimitInput,
+    RequestPasswordResetInput, RequestPasswordResetOutput, ResetPasswordInput, ResetPasswordOutput,
+    VerifiedChallenge, VerifyChallengeInput,
 };
 pub use store::{
     AppendAuthEventInput, AuthEventKind, AuthEventRecord, AuthEventStore, AuthStore,

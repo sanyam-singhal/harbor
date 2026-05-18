@@ -5,9 +5,10 @@ use crate::{
     ChallengeRecord, Clock, CommonPasswordBlocklist, CreateChallengeInput, CreateSessionInput,
     CreateUserEmailInput, CreateUserInput, EmailAddress, FindEmailByCanonicalInput,
     GetChallengeInput, GetPasswordCredentialInput, GetSessionInput, HmacSecretKey,
-    InsertPasswordInput, MarkEmailVerifiedInput, PasswordBlocklist, PasswordCredentialRecord,
-    RedirectPath, RetryBudget, RevokeSessionInput, RevokeUserSessionsInput, SecretGenerator,
-    SecretHashPurpose, SecretToken, SessionRecord, UserEmailRecord, constant_time_token_hash_eq,
+    IncrementRateLimitInput, InsertPasswordInput, MarkEmailVerifiedInput, PasswordBlocklist,
+    PasswordCredentialRecord, RedirectPath, RetryBudget, RevokeSessionInput,
+    RevokeUserSessionsInput, SecretGenerator, SecretHashPurpose, SecretToken, SessionRecord,
+    UnixTimestampMicros, UserEmailRecord, constant_time_token_hash_eq, hash_secret,
     hash_secret_token, new_challenge_id, new_session_id, new_user_email_id, new_user_id,
     random_otp_code, random_session_token, random_url_token,
 };
@@ -18,6 +19,7 @@ const SIGNUP_CONFIRMATION_MICROS: i64 = 30 * 60 * 1_000_000;
 const EMAIL_SIGNIN_MICROS: i64 = 10 * 60 * 1_000_000;
 const PASSWORD_RESET_MICROS: i64 = 15 * 60 * 1_000_000;
 const RESEND_COOLDOWN_MICROS: i64 = 60 * 1_000_000;
+const MAX_RATE_LIMIT_KEY_BYTES: usize = 1024;
 
 /// Core auth service.
 #[derive(Clone)]
@@ -219,6 +221,52 @@ where
             return Ok(None);
         }
         Ok(Some(CurrentSession { session }))
+    }
+
+    /// Increments and checks a scoped rate-limit counter.
+    ///
+    /// The key is HMAC-hashed before storage so raw emails, IPs, or request
+    /// fingerprints do not become durable lookup material.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AuthError`] when the key is invalid, hashing fails,
+    /// persistence fails, or the configured budget has been exceeded.
+    pub async fn enforce_rate_limit(&self, input: RateLimitInput) -> Result<(), AuthError> {
+        validate_rate_limit_key(&input.key)?;
+        let now = self.clock.now();
+        let window_micros = input.window.as_i64();
+        if window_micros <= 0 {
+            return Err(AuthError::with_detail(
+                AuthErrorCode::Internal,
+                "rate_limit_window",
+            ));
+        }
+        let window_start =
+            UnixTimestampMicros::try_new((now.as_i64() / window_micros) * window_micros).map_err(
+                |_error| AuthError::with_detail(AuthErrorCode::Internal, "rate_limit_window_start"),
+            )?;
+        let key_hash = hash_secret(
+            &self.hmac_key,
+            SecretHashPurpose::RequestFingerprint,
+            rate_limit_key_material(input.scope, &input.key).as_bytes(),
+        )
+        .map_err(|_error| AuthError::with_detail(AuthErrorCode::Internal, "rate_limit_hash"))?;
+        let decision = self
+            .store
+            .increment_rate_limit(IncrementRateLimitInput {
+                scope: input.scope.as_str().to_owned(),
+                key_hash,
+                window_start,
+                max_count: input.max_count,
+            })
+            .await
+            .map_err(AuthError::from)?;
+        if decision.allowed {
+            Ok(())
+        } else {
+            Err(AuthError::new(AuthErrorCode::RateLimited))
+        }
     }
 
     /// Revokes the session identified by a presented session token.
@@ -639,6 +687,64 @@ fn secret_hash_purpose_for_delivery(delivery: ChallengeDelivery) -> SecretHashPu
         ChallengeDelivery::OtpCode => SecretHashPurpose::OtpCode,
         ChallengeDelivery::MagicLink | ChallengeDelivery::Both => SecretHashPurpose::UrlToken,
     }
+}
+
+fn validate_rate_limit_key(value: &str) -> Result<(), AuthError> {
+    if value.is_empty() {
+        return Err(AuthError::new(AuthErrorCode::InvalidCredentials));
+    }
+    if value.len() > MAX_RATE_LIMIT_KEY_BYTES || value.chars().any(char::is_control) {
+        return Err(AuthError::new(AuthErrorCode::InvalidCredentials));
+    }
+    Ok(())
+}
+
+fn rate_limit_key_material(scope: AuthRateLimitScope, key: &str) -> String {
+    let mut material = String::with_capacity(scope.as_str().len() + 1 + key.len());
+    material.push_str(scope.as_str());
+    material.push(':');
+    material.push_str(key);
+    material
+}
+
+/// Auth workflow rate-limit scope.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum AuthRateLimitScope {
+    /// Password signup attempts.
+    Signup,
+    /// Password signin attempts.
+    PasswordSignin,
+    /// Email signin or signup challenge requests.
+    EmailChallenge,
+    /// Password reset requests.
+    PasswordReset,
+}
+
+impl AuthRateLimitScope {
+    /// Returns the stable storage scope.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Signup => "signup",
+            Self::PasswordSignin => "password_signin",
+            Self::EmailChallenge => "email_challenge",
+            Self::PasswordReset => "password_reset",
+        }
+    }
+}
+
+/// Rate-limit check input.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RateLimitInput {
+    /// Rate-limit scope.
+    pub scope: AuthRateLimitScope,
+    /// Non-secret caller key before Harbor hashes it for storage.
+    pub key: String,
+    /// Maximum allowed requests in the window.
+    pub max_count: RetryBudget,
+    /// Window duration in microseconds.
+    pub window: UnixTimestampMicros,
 }
 
 /// Password signup input.
