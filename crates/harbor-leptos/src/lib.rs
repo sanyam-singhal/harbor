@@ -7,8 +7,9 @@
 use core::fmt;
 
 use harbor_core::{
-    ConfigError, ConfigErrorCode, HmacSecretKey, PasswordPolicy, RetryBudget, SecretToken,
-    UnixTimestampMicros,
+    AuthError, AuthErrorCode, ConfigError, ConfigErrorCode, HmacSecretKey, PasswordPolicy,
+    RetryBudget, SecretGenerator, SecretHashPurpose, SecretToken, UnixTimestampMicros,
+    constant_time_token_hash_eq, hash_secret_token, random_url_token,
 };
 
 /// Version of the `harbor-leptos` crate.
@@ -628,6 +629,64 @@ pub fn parse_cookie_value(cookie_header: &str, name: &CookieName) -> Option<Stri
     })
 }
 
+/// Issues a new CSRF token.
+///
+/// # Errors
+///
+/// Returns [`AuthError`] when secure randomness fails.
+pub fn issue_csrf_token(generator: &impl SecretGenerator) -> Result<SecretToken, AuthError> {
+    random_url_token(generator)
+        .map_err(|_error| AuthError::with_detail(AuthErrorCode::Internal, "csrf_token"))
+}
+
+/// Validates a CSRF double-submit cookie/header pair.
+///
+/// # Errors
+///
+/// Returns [`AuthError`] when either token is missing, malformed, or does not
+/// match under Harbor's configured token hash key.
+pub fn validate_csrf_tokens(
+    config: &HarborConfig,
+    cookie_token: Option<&str>,
+    header_token: Option<&str>,
+) -> Result<(), AuthError> {
+    let cookie_token = parse_presented_csrf(cookie_token)?;
+    let header_token = parse_presented_csrf(header_token)?;
+    let cookie_hash = hash_secret_token(
+        config.hmac_secret_key(),
+        SecretHashPurpose::CsrfToken,
+        &cookie_token,
+    )
+    .map_err(|_error| AuthError::with_detail(AuthErrorCode::Csrf, "csrf_cookie_hash"))?;
+    let header_hash = hash_secret_token(
+        config.hmac_secret_key(),
+        SecretHashPurpose::CsrfToken,
+        &header_token,
+    )
+    .map_err(|_error| AuthError::with_detail(AuthErrorCode::Csrf, "csrf_header_hash"))?;
+
+    if constant_time_token_hash_eq(&cookie_hash, &header_hash) {
+        Ok(())
+    } else {
+        Err(AuthError::new(AuthErrorCode::Csrf))
+    }
+}
+
+/// Parses and validates a CSRF token from a request cookie header.
+///
+/// # Errors
+///
+/// Returns [`AuthError`] when the cookie is missing or the CSRF pair is invalid.
+pub fn validate_csrf_from_headers(
+    config: &HarborConfig,
+    cookie_header: Option<&str>,
+    csrf_header: Option<&str>,
+) -> Result<(), AuthError> {
+    let cookie_token = cookie_header
+        .and_then(|header| parse_cookie_value(header, config.cookie_defaults().csrf_cookie_name()));
+    validate_csrf_tokens(config, cookie_token.as_deref(), csrf_header)
+}
+
 /// Validated cookie name.
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub struct CookieName(String);
@@ -898,6 +957,11 @@ fn validate_cookie_value(value: &str) -> Result<(), ConfigError> {
     Ok(())
 }
 
+fn parse_presented_csrf(value: Option<&str>) -> Result<SecretToken, AuthError> {
+    let value = value.ok_or_else(|| AuthError::new(AuthErrorCode::Csrf))?;
+    SecretToken::try_new(value.to_owned()).map_err(|_error| AuthError::new(AuthErrorCode::Csrf))
+}
+
 fn same_site_value(same_site: SameSite) -> &'static str {
     match same_site {
         SameSite::Lax => "Lax",
@@ -914,14 +978,16 @@ fn is_allowed_public_base_url(value: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use harbor_core::SecretToken;
+    use harbor_core::{AuthErrorCode, SecretToken};
     use harbor_email::RecordingMailer;
+    use harbor_test_support::DeterministicSecretGenerator;
     use leptos::prelude::Owner;
 
     use super::{
         CookieDefaults, CookieName, Harbor, PublicBaseUrl, SameSite, UnixTimestampMicros,
         build_csrf_cookie, build_delete_session_cookie, build_session_cookie, parse_cookie_value,
-        provide_harbor_context, use_harbor_context,
+        provide_harbor_context, use_harbor_context, validate_csrf_from_headers,
+        validate_csrf_tokens,
     };
 
     #[test]
@@ -1039,6 +1105,49 @@ mod tests {
         assert!(!csrf.contains("HttpOnly"));
         assert_eq!(parsed, Some("sessiontoken".to_owned()));
         assert!(delete.contains("Max-Age=0"));
+        Ok(())
+    }
+
+    #[test]
+    fn csrf_tokens_validate_through_cookie_and_header() -> Result<(), Box<dyn std::error::Error>> {
+        let harbor = Harbor::builder()
+            .with_store("store")
+            .with_mailer(RecordingMailer::new())
+            .with_public_base_url("http://localhost:3000")?
+            .with_hmac_secret_key(vec![7; 32])?
+            .finish()?;
+        let token = super::issue_csrf_token(&DeterministicSecretGenerator::new())?;
+        let csrf_cookie = build_csrf_cookie(harbor.config().cookie_defaults(), &token, None)?;
+        let cookie_header = match csrf_cookie.split(';').next() {
+            Some(value) => value,
+            None => return Err("cookie header should have a name-value pair".into()),
+        };
+
+        validate_csrf_tokens(
+            harbor.config(),
+            Some(token.expose_secret()),
+            Some(token.expose_secret()),
+        )?;
+        validate_csrf_from_headers(
+            harbor.config(),
+            Some(cookie_header),
+            Some(token.expose_secret()),
+        )?;
+
+        let mismatch =
+            validate_csrf_tokens(harbor.config(), Some(token.expose_secret()), Some("wrong"));
+        let mismatch = match mismatch {
+            Ok(()) => return Err("csrf mismatch should fail".into()),
+            Err(error) => error,
+        };
+        assert_eq!(mismatch.code(), AuthErrorCode::Csrf);
+
+        let missing = validate_csrf_tokens(harbor.config(), None, Some(token.expose_secret()));
+        let missing = match missing {
+            Ok(()) => return Err("missing csrf cookie should fail".into()),
+            Err(error) => error,
+        };
+        assert_eq!(missing.code(), AuthErrorCode::Csrf);
         Ok(())
     }
 }

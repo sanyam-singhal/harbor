@@ -13,5 +13,8 @@ harbor-core.workspace = true
 harbor-email.workspace = true
 leptos.workspace = true
 
+[dev-dependencies]
+harbor-test-support.workspace = true
+
 [lints]
 workspace = true
