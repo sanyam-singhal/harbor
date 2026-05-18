@@ -26,6 +26,7 @@ harbor-leptos = { path = "crates/harbor-leptos" }
 harbor-sqlx = { path = "crates/harbor-sqlx" }
 harbor-test-support = { path = "crates/harbor-test-support" }
 hmac = { version = "0.13.0", default-features = false }
+resend-rs = { version = "0.25.1", default-features = false, features = ["rustls-tls"] }
 sha2 = { version = "0.11.0", default-features = false }
 sqlx = { version = "0.8.6", default-features = false, features = ["migrate", "runtime-tokio", "sqlite"] }
 subtle = { version = "2.6.1", default-features = false }

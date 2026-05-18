@@ -11,10 +11,15 @@ use harbor_core::{
     MailErrorCode, SecretToken,
 };
 
+#[cfg(feature = "email-resend")]
+use resend_rs::{Resend, types::CreateEmailBaseOptions};
+
 /// Version of the `harbor-email` crate.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 const MAX_SECRET_URL_BYTES: usize = 4096;
+#[cfg(feature = "email-resend")]
+const DEFAULT_RESEND_FROM: &str = "Harbor <auth@issuecertificate.com>";
 
 /// Email delivery boundary used by Harbor web integrations.
 pub trait AuthMailer: Clone + Send + Sync + 'static {
@@ -325,6 +330,166 @@ impl AuthMailer for RecordingMailer {
     }
 }
 
+/// Resend-backed auth mailer.
+#[cfg(feature = "email-resend")]
+#[derive(Clone)]
+pub struct ResendMailer {
+    client: Resend,
+    from: String,
+}
+
+#[cfg(feature = "email-resend")]
+impl ResendMailer {
+    /// Creates a Resend mailer.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MailError`] when the API key or sender are invalid.
+    ///
+    /// # Panics
+    ///
+    /// The upstream `resend-rs` constructor can panic if `RESEND_BASE_URL` is
+    /// present but not a valid URL.
+    pub fn new(api_key: impl Into<String>, from: impl Into<String>) -> Result<Self, MailError> {
+        let api_key = api_key.into();
+        validate_resend_api_key(&api_key)?;
+        let from = from.into();
+        validate_resend_from(&from)?;
+        Ok(Self {
+            client: Resend::new(&api_key),
+            from,
+        })
+    }
+
+    /// Creates a Resend mailer from environment variables.
+    ///
+    /// Reads `RESEND_API_KEY` and optional `HARBOR_EMAIL_FROM`. When
+    /// `HARBOR_EMAIL_FROM` is absent, Harbor uses
+    /// `Harbor <auth@issuecertificate.com>`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MailError`] when required configuration is missing or invalid.
+    ///
+    /// # Panics
+    ///
+    /// The upstream `resend-rs` constructor can panic if `RESEND_BASE_URL` is
+    /// present but not a valid URL.
+    pub fn from_env() -> Result<Self, MailError> {
+        let api_key = std::env::var("RESEND_API_KEY")
+            .map_err(|_error| MailError::with_detail(MailErrorCode::InvalidConfig, "api_key"))?;
+        let from = std::env::var("HARBOR_EMAIL_FROM")
+            .unwrap_or_else(|_error| DEFAULT_RESEND_FROM.to_owned());
+        Self::new(api_key, from)
+    }
+
+    /// Returns the configured sender.
+    #[must_use]
+    pub fn from(&self) -> &str {
+        &self.from
+    }
+}
+
+#[cfg(feature = "email-resend")]
+impl fmt::Debug for ResendMailer {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ResendMailer")
+            .field("client", &"[REDACTED]")
+            .field("from", &self.from)
+            .finish()
+    }
+}
+
+#[cfg(feature = "email-resend")]
+impl AuthMailer for ResendMailer {
+    async fn send_auth_email(&self, email: AuthEmail) -> Result<MailDelivery, MailError> {
+        let mut options = CreateEmailBaseOptions::new(
+            self.from.clone(),
+            [email.to().original().to_owned()],
+            email.subject().to_owned(),
+        )
+        .with_text(email.text_body());
+        if let Some(html) = email.html_body() {
+            options = options.with_html(html);
+        }
+
+        let response = self
+            .client
+            .emails
+            .send(options)
+            .await
+            .map_err(map_resend_error)?;
+        Ok(MailDelivery {
+            provider_message_id: Some(response.id.to_string()),
+        })
+    }
+}
+
+#[cfg(feature = "email-resend")]
+fn validate_resend_api_key(api_key: &str) -> Result<(), MailError> {
+    if api_key.is_empty() {
+        return Err(MailError::with_detail(
+            MailErrorCode::InvalidConfig,
+            "api_key_empty",
+        ));
+    }
+    if api_key.chars().any(char::is_control) {
+        return Err(MailError::with_detail(
+            MailErrorCode::InvalidConfig,
+            "api_key_control",
+        ));
+    }
+    if !api_key.starts_with("re_") {
+        return Err(MailError::with_detail(
+            MailErrorCode::InvalidConfig,
+            "api_key_prefix",
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(feature = "email-resend")]
+fn validate_resend_from(from: &str) -> Result<(), MailError> {
+    if from.is_empty() {
+        return Err(MailError::with_detail(
+            MailErrorCode::InvalidConfig,
+            "from_empty",
+        ));
+    }
+    if from.len() > 320 {
+        return Err(MailError::with_detail(
+            MailErrorCode::InvalidConfig,
+            "from_long",
+        ));
+    }
+    if from.chars().any(char::is_control) {
+        return Err(MailError::with_detail(
+            MailErrorCode::InvalidConfig,
+            "from_control",
+        ));
+    }
+    if !from.contains('@') {
+        return Err(MailError::with_detail(
+            MailErrorCode::InvalidConfig,
+            "from_missing_at",
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(feature = "email-resend")]
+fn map_resend_error(error: resend_rs::Error) -> MailError {
+    match error {
+        resend_rs::Error::RateLimit { .. } => MailError::new(MailErrorCode::RateLimited),
+        resend_rs::Error::Resend(_) => MailError::new(MailErrorCode::Rejected),
+        resend_rs::Error::Http(_) => MailError::new(MailErrorCode::Unavailable),
+        resend_rs::Error::Parse { .. } | resend_rs::Error::Other(_) => {
+            MailError::new(MailErrorCode::Internal)
+        }
+    }
+}
+
 fn validate_template_secrets(
     delivery: ChallengeDelivery,
     action_url: Option<&SecretUrl>,
@@ -506,5 +671,26 @@ mod tests {
         assert!(SecretUrl::try_new("https://issuecertificate.com/auth/email-link").is_ok());
         assert!(SecretUrl::try_new("http://localhost:3000/auth/email-link").is_ok());
         assert!(SecretUrl::try_new("http://example.com/auth/email-link").is_err());
+    }
+
+    #[cfg(feature = "email-resend")]
+    #[test]
+    fn resend_mailer_validates_configuration_without_sending() {
+        assert!(super::ResendMailer::new("not-a-resend-key", "Harbor <auth@example.com>").is_err());
+        assert!(super::ResendMailer::new("re_test", "missing-at").is_err());
+
+        let mailer = super::ResendMailer::new("re_test", "Harbor <auth@example.com>");
+        assert!(mailer.is_ok());
+    }
+
+    #[cfg(feature = "email-resend")]
+    #[test]
+    fn resend_mailer_debug_redacts_client() -> Result<(), Box<dyn std::error::Error>> {
+        let mailer = super::ResendMailer::new("re_test", "Harbor <auth@example.com>")?;
+
+        let debug = format!("{mailer:?}");
+        assert!(debug.contains("ResendMailer"));
+        assert!(!debug.contains("re_test"));
+        Ok(())
     }
 }

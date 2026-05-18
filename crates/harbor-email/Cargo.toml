@@ -8,8 +8,13 @@ repository.workspace = true
 authors.workspace = true
 publish = false
 
+[features]
+default = []
+email-resend = ["dep:resend-rs"]
+
 [dependencies]
 harbor-core.workspace = true
+resend-rs = { workspace = true, optional = true }
 
 [dev-dependencies]
 tokio.workspace = true
