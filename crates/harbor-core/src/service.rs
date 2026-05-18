@@ -1,16 +1,23 @@
 //! Core authentication services.
 
 use crate::{
-    Argon2PasswordHasher, AuthError, AuthErrorCode, AuthStore, Clock, CommonPasswordBlocklist,
-    CreateSessionInput, CreateUserEmailInput, CreateUserInput, EmailAddress,
-    FindEmailByCanonicalInput, GetPasswordCredentialInput, GetSessionInput, HmacSecretKey,
-    InsertPasswordInput, PasswordBlocklist, RedirectPath, RevokeSessionInput, SecretGenerator,
-    SecretHashPurpose, SecretToken, SessionRecord, UserEmailRecord, hash_secret_token,
-    new_session_id, new_user_email_id, new_user_id, random_session_token,
+    Argon2PasswordHasher, AuthError, AuthErrorCode, AuthStore, ChallengeDelivery, ChallengePurpose,
+    ChallengeRecord, Clock, CommonPasswordBlocklist, CreateChallengeInput, CreateSessionInput,
+    CreateUserEmailInput, CreateUserInput, EmailAddress, FindEmailByCanonicalInput,
+    GetChallengeInput, GetPasswordCredentialInput, GetSessionInput, HmacSecretKey,
+    InsertPasswordInput, MarkEmailVerifiedInput, PasswordBlocklist, RedirectPath, RetryBudget,
+    RevokeSessionInput, SecretGenerator, SecretHashPurpose, SecretToken, SessionRecord,
+    UserEmailRecord, constant_time_token_hash_eq, hash_secret_token, new_challenge_id,
+    new_session_id, new_user_email_id, new_user_id, random_otp_code, random_session_token,
+    random_url_token,
 };
 
 const DEFAULT_IDLE_SESSION_MICROS: i64 = 12 * 60 * 60 * 1_000_000;
 const DEFAULT_ABSOLUTE_SESSION_MICROS: i64 = 30 * 24 * 60 * 60 * 1_000_000;
+const SIGNUP_CONFIRMATION_MICROS: i64 = 30 * 60 * 1_000_000;
+const EMAIL_SIGNIN_MICROS: i64 = 10 * 60 * 1_000_000;
+const PASSWORD_RESET_MICROS: i64 = 15 * 60 * 1_000_000;
+const RESEND_COOLDOWN_MICROS: i64 = 60 * 1_000_000;
 
 /// Core auth service.
 #[derive(Clone)]
@@ -263,6 +270,149 @@ where
             .map_err(AuthError::from)?;
         Ok(revoked.is_some())
     }
+
+    /// Creates an email challenge and returns the secret that should be sent.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AuthError`] when input validation, randomness, hashing, or
+    /// storage fails.
+    pub async fn create_email_challenge(
+        &self,
+        input: EmailChallengeInput,
+    ) -> Result<EmailChallengeOutput, AuthError> {
+        let email = EmailAddress::parse(input.email)
+            .map_err(|_error| AuthError::new(AuthErrorCode::InvalidCredentials))?;
+        let secret = match input.delivery {
+            ChallengeDelivery::OtpCode => random_otp_code(&self.generator),
+            ChallengeDelivery::MagicLink | ChallengeDelivery::Both => {
+                random_url_token(&self.generator)
+            }
+        }
+        .map_err(|_error| AuthError::with_detail(AuthErrorCode::Internal, "challenge_secret"))?;
+        let secret_hash = hash_secret_token(
+            &self.hmac_key,
+            secret_hash_purpose_for_delivery(input.delivery),
+            &secret,
+        )
+        .map_err(|_error| AuthError::with_detail(AuthErrorCode::Internal, "challenge_hash"))?;
+        let now = self.clock.now();
+        let expires_at = now
+            .checked_add_micros(challenge_lifetime(input.purpose))
+            .ok_or_else(|| AuthError::with_detail(AuthErrorCode::Internal, "challenge_expiry"))?;
+        let resend_after = now
+            .checked_add_micros(RESEND_COOLDOWN_MICROS)
+            .ok_or_else(|| AuthError::with_detail(AuthErrorCode::Internal, "resend_after"))?;
+        let challenge = self
+            .store
+            .create_challenge(CreateChallengeInput {
+                id: new_challenge_id(&self.generator).map_err(|_error| {
+                    AuthError::with_detail(AuthErrorCode::Internal, "challenge_id")
+                })?,
+                purpose: input.purpose,
+                user_id: input.user_id,
+                email_canonical: email.canonical().clone(),
+                secret_hash,
+                delivery: input.delivery,
+                redirect_path: input.redirect_path,
+                expires_at,
+                max_attempts: RetryBudget::try_new(5).map_err(|_error| {
+                    AuthError::with_detail(AuthErrorCode::Internal, "attempts")
+                })?,
+                resend_after,
+                now,
+            })
+            .await
+            .map_err(AuthError::from)?;
+
+        Ok(EmailChallengeOutput { challenge, secret })
+    }
+
+    /// Verifies and consumes an email challenge.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AuthError`] when the challenge is missing, expired, exhausted,
+    /// already consumed, or the secret does not match.
+    pub async fn verify_email_challenge(
+        &self,
+        input: VerifyChallengeInput,
+    ) -> Result<VerifiedChallenge, AuthError> {
+        let challenge = self
+            .store
+            .get_challenge(GetChallengeInput {
+                challenge_id: input.challenge_id.clone(),
+            })
+            .await
+            .map_err(AuthError::from)?
+            .ok_or_else(|| AuthError::new(AuthErrorCode::InvalidCredentials))?;
+        if challenge.purpose != input.purpose || challenge.consumed_at.is_some() {
+            return Err(AuthError::new(AuthErrorCode::InvalidCredentials));
+        }
+        let now = self.clock.now();
+        if challenge.expires_at <= now {
+            return Err(AuthError::new(AuthErrorCode::InvalidCredentials));
+        }
+        let attempt_count = usize::try_from(challenge.attempt_count).unwrap_or(usize::MAX);
+        if attempt_count >= challenge.max_attempts.get() {
+            return Err(AuthError::new(AuthErrorCode::RateLimited));
+        }
+        let presented_hash = hash_secret_token(
+            &self.hmac_key,
+            secret_hash_purpose_for_delivery(challenge.delivery),
+            &input.secret,
+        )
+        .map_err(|_error| AuthError::with_detail(AuthErrorCode::Internal, "challenge_hash"))?;
+        if !constant_time_token_hash_eq(&presented_hash, &challenge.secret_hash) {
+            self.store
+                .increment_challenge_attempts(crate::IncrementChallengeAttemptsInput {
+                    challenge_id: input.challenge_id,
+                })
+                .await
+                .map_err(AuthError::from)?;
+            return Err(AuthError::new(AuthErrorCode::InvalidCredentials));
+        }
+
+        let consumed = self
+            .store
+            .consume_challenge(
+                GetChallengeInput {
+                    challenge_id: input.challenge_id,
+                },
+                now,
+            )
+            .await
+            .map_err(AuthError::from)?
+            .ok_or_else(|| AuthError::new(AuthErrorCode::InvalidCredentials))?;
+        if consumed.purpose == ChallengePurpose::SignupConfirmation {
+            self.store
+                .mark_email_verified(MarkEmailVerifiedInput {
+                    email_canonical: consumed.email_canonical.clone(),
+                    verified_at: now,
+                })
+                .await
+                .map_err(AuthError::from)?;
+        }
+
+        Ok(VerifiedChallenge {
+            challenge: consumed,
+        })
+    }
+}
+
+fn challenge_lifetime(purpose: ChallengePurpose) -> i64 {
+    match purpose {
+        ChallengePurpose::SignupConfirmation => SIGNUP_CONFIRMATION_MICROS,
+        ChallengePurpose::EmailSignIn => EMAIL_SIGNIN_MICROS,
+        ChallengePurpose::PasswordReset => PASSWORD_RESET_MICROS,
+    }
+}
+
+fn secret_hash_purpose_for_delivery(delivery: ChallengeDelivery) -> SecretHashPurpose {
+    match delivery {
+        ChallengeDelivery::OtpCode => SecretHashPurpose::OtpCode,
+        ChallengeDelivery::MagicLink | ChallengeDelivery::Both => SecretHashPurpose::UrlToken,
+    }
 }
 
 /// Password signup input.
@@ -310,4 +460,46 @@ pub struct PasswordSignInOutput {
 pub struct CurrentSession {
     /// Active session.
     pub session: SessionRecord,
+}
+
+/// Email challenge creation input.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EmailChallengeInput {
+    /// Challenge purpose.
+    pub purpose: ChallengePurpose,
+    /// Delivery style.
+    pub delivery: ChallengeDelivery,
+    /// Target email.
+    pub email: String,
+    /// Optional linked user.
+    pub user_id: Option<crate::UserId>,
+    /// Optional post-verification redirect.
+    pub redirect_path: Option<RedirectPath>,
+}
+
+/// Created email challenge and secret.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EmailChallengeOutput {
+    /// Persisted challenge.
+    pub challenge: ChallengeRecord,
+    /// Secret to deliver by email.
+    pub secret: SecretToken,
+}
+
+/// Email challenge verification input.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VerifyChallengeInput {
+    /// Challenge id.
+    pub challenge_id: crate::ChallengeId,
+    /// Expected purpose.
+    pub purpose: ChallengePurpose,
+    /// Presented secret.
+    pub secret: SecretToken,
+}
+
+/// Verified email challenge.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VerifiedChallenge {
+    /// Consumed challenge.
+    pub challenge: ChallengeRecord,
 }

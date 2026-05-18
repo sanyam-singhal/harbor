@@ -962,7 +962,7 @@ mod tests {
         GetUserInput, HmacSecretKey, IncrementChallengeAttemptsInput, IncrementRateLimitInput,
         InsertPasswordInput, MarkEmailVerifiedInput, PasswordCredentialStore, PasswordHashString,
         PasswordPolicy, RateLimitStore, RedirectPath, RetryBudget, RevokeSessionInput,
-        RevokeUserSessionsInput, SessionId, SessionStore, StoreErrorCode, TokenHash,
+        RevokeUserSessionsInput, SecretToken, SessionId, SessionStore, StoreErrorCode, TokenHash,
         UnixTimestampMicros, UpdateSessionLastSeenInput, UserEmailId, UserEmailStore, UserId,
         UserStore,
     };
@@ -1484,12 +1484,27 @@ mod tests {
         };
         assert_eq!(unverified.code(), AuthErrorCode::EmailNotVerified);
 
-        store
-            .mark_email_verified(MarkEmailVerifiedInput {
-                email_canonical: signup.email.email_canonical.clone(),
-                verified_at: now(),
+        let confirmation = service
+            .create_email_challenge(harbor_core::EmailChallengeInput {
+                purpose: ChallengePurpose::SignupConfirmation,
+                delivery: ChallengeDelivery::MagicLink,
+                email: signup.email.email_original.clone(),
+                user_id: Some(signup.user.id.clone()),
+                redirect_path: Some(RedirectPath::try_new("/account")?),
             })
             .await?;
+        let verified = service
+            .verify_email_challenge(harbor_core::VerifyChallengeInput {
+                challenge_id: confirmation.challenge.id,
+                purpose: ChallengePurpose::SignupConfirmation,
+                secret: confirmation.secret,
+            })
+            .await?;
+        assert_eq!(
+            verified.challenge.email_canonical,
+            signup.email.email_canonical
+        );
+
         let signin = service
             .sign_in_with_password(harbor_core::PasswordSignInInput {
                 email: "SERVICE@example.com".to_owned(),
@@ -1509,6 +1524,90 @@ mod tests {
         assert!(signed_out);
         let current_after_signout = service.current_session(&signin.session_token).await?;
         assert_eq!(current_after_signout, None);
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn email_challenge_service_rejects_bad_secret_and_consumed_reuse()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let store = migrated_store().await?;
+        let service = AuthService::new(
+            store.clone(),
+            FixedClock::new(now()),
+            DeterministicSecretGenerator::new(),
+            HmacSecretKey::try_new(vec![9; 32])?,
+            Argon2PasswordHasher::new(
+                PasswordPolicy::try_new(8, 128)?,
+                Argon2Params::try_new(32, 1, 1)?,
+            ),
+        );
+
+        let challenge = service
+            .create_email_challenge(harbor_core::EmailChallengeInput {
+                purpose: ChallengePurpose::EmailSignIn,
+                delivery: ChallengeDelivery::OtpCode,
+                email: "challenge@example.com".to_owned(),
+                user_id: None,
+                redirect_path: Some(RedirectPath::try_new("/account")?),
+            })
+            .await?;
+        assert_eq!(challenge.secret.expose_secret().len(), 8);
+        assert!(
+            challenge
+                .secret
+                .expose_secret()
+                .chars()
+                .all(|character| character.is_ascii_digit())
+        );
+
+        let bad_secret = service
+            .verify_email_challenge(harbor_core::VerifyChallengeInput {
+                challenge_id: challenge.challenge.id.clone(),
+                purpose: ChallengePurpose::EmailSignIn,
+                secret: SecretToken::try_new("00000000")?,
+            })
+            .await;
+        let bad_secret = match bad_secret {
+            Ok(_) => return Err("wrong challenge secret should fail".into()),
+            Err(error) => error,
+        };
+        assert_eq!(bad_secret.code(), AuthErrorCode::InvalidCredentials);
+
+        let incremented = store
+            .get_challenge(GetChallengeInput {
+                challenge_id: challenge.challenge.id.clone(),
+            })
+            .await?;
+        let incremented = match incremented {
+            Some(challenge) => challenge,
+            None => return Err("challenge should remain after failed attempt".into()),
+        };
+        assert_eq!(incremented.attempt_count, 1);
+
+        let verified = service
+            .verify_email_challenge(harbor_core::VerifyChallengeInput {
+                challenge_id: challenge.challenge.id.clone(),
+                purpose: ChallengePurpose::EmailSignIn,
+                secret: challenge.secret,
+            })
+            .await?;
+        assert_eq!(
+            verified.challenge.redirect_path,
+            Some(RedirectPath::try_new("/account")?)
+        );
+
+        let reused = service
+            .verify_email_challenge(harbor_core::VerifyChallengeInput {
+                challenge_id: challenge.challenge.id,
+                purpose: ChallengePurpose::EmailSignIn,
+                secret: SecretToken::try_new("00000000")?,
+            })
+            .await;
+        let reused = match reused {
+            Ok(_) => return Err("consumed challenge should be single use".into()),
+            Err(error) => error,
+        };
+        assert_eq!(reused.code(), AuthErrorCode::InvalidCredentials);
         Ok(())
     }
 
