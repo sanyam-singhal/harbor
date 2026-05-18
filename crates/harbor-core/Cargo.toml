@@ -11,6 +11,9 @@ publish = false
 [dependencies]
 argon2.workspace = true
 getrandom.workspace = true
+hmac.workspace = true
+sha2.workspace = true
+subtle.workspace = true
 
 [lints]
 workspace = true

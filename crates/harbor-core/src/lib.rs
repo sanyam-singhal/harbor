@@ -6,13 +6,14 @@
 pub mod domain;
 pub mod password;
 pub mod ports;
+pub mod secret;
 
 /// Version of the `harbor-core` crate.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 pub use domain::{
-    CanonicalEmail, ChallengeId, EmailAddress, RedirectPath, RetryBudget, SecretToken, SessionId,
-    TokenHash, UnixTimestampMicros, UserId,
+    CanonicalEmail, ChallengeId, DomainError, EmailAddress, RedirectPath, RetryBudget, SecretToken,
+    SessionId, TokenHash, UnixTimestampMicros, UserId,
 };
 pub use password::{
     Argon2Params, Argon2PasswordHasher, CommonPasswordBlocklist, PasswordBlocklist, PasswordError,
@@ -21,4 +22,7 @@ pub use password::{
 pub use ports::{
     Clock, RandomError, SecretGenerator, SystemClock, SystemSecretGenerator, new_challenge_id,
     new_session_id, new_user_id, random_otp_code, random_session_token, random_url_token,
+};
+pub use secret::{
+    HmacSecretKey, SecretHashPurpose, constant_time_token_hash_eq, hash_secret, hash_secret_token,
 };
