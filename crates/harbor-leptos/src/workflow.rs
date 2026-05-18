@@ -1,8 +1,8 @@
 //! Leptos-facing auth workflow wrappers.
 
 use harbor_core::{
-    AuthError, AuthErrorCode, AuthService, AuthStore, ChallengeDelivery, ChallengePurpose, Clock,
-    PasswordBlocklist, RedirectPath, SecretGenerator, SecretToken,
+    AuthError, AuthErrorCode, AuthService, AuthStore, ChallengeDelivery, ChallengeId,
+    ChallengePurpose, Clock, PasswordBlocklist, RedirectPath, SecretGenerator, SecretToken,
 };
 use harbor_email::{
     AuthMailer, ChallengeEmailInput, EmailRecipient, SecretUrl, render_challenge_email,
@@ -27,6 +27,15 @@ pub struct SessionActionResponse {
     pub set_cookie: String,
     /// Optional redirect path.
     pub redirect_path: Option<RedirectPath>,
+}
+
+/// Response returned after requesting an email OTP challenge.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EmailCodeActionResponse {
+    /// Stable user-facing message.
+    pub message: String,
+    /// Non-secret challenge id to submit with the OTP code.
+    pub challenge_id: ChallengeId,
 }
 
 /// Signs up with password and sends a signup confirmation email.
@@ -127,6 +136,45 @@ where
     send_challenge_email(mailer, config, challenge, "/auth/email-link").await?;
     Ok(AuthActionResponse {
         message: "Check your email to continue.".to_owned(),
+    })
+}
+
+/// Requests an email OTP signin challenge.
+///
+/// # Errors
+///
+/// Returns [`AuthError`] when CSRF validation, challenge creation, rendering,
+/// or delivery fails.
+pub async fn request_email_code_signin<S, C, G, B, M>(
+    service: &AuthService<S, C, G, B>,
+    mailer: &M,
+    config: &HarborConfig,
+    csrf: CsrfRequest,
+    email: String,
+    redirect_path: Option<RedirectPath>,
+) -> Result<EmailCodeActionResponse, AuthError>
+where
+    S: AuthStore,
+    C: Clock,
+    G: SecretGenerator,
+    B: PasswordBlocklist,
+    M: AuthMailer,
+{
+    validate_csrf_request(config, &csrf)?;
+    let challenge = service
+        .create_email_challenge(harbor_core::EmailChallengeInput {
+            purpose: ChallengePurpose::EmailSignIn,
+            delivery: ChallengeDelivery::OtpCode,
+            email,
+            user_id: None,
+            redirect_path,
+        })
+        .await?;
+    let challenge_id = challenge.challenge.id.clone();
+    send_challenge_email(mailer, config, challenge, "/auth/email-code").await?;
+    Ok(EmailCodeActionResponse {
+        message: "Check your email to continue.".to_owned(),
+        challenge_id,
     })
 }
 

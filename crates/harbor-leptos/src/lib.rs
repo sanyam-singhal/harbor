@@ -32,9 +32,9 @@ pub use links::{
     handle_reset_password_link,
 };
 pub use workflow::{
-    AuthActionResponse, SessionActionResponse, current_session, request_email_signin,
-    request_password_reset, reset_password, sign_out, signin_with_password, signup_with_password,
-    verify_email_code,
+    AuthActionResponse, EmailCodeActionResponse, SessionActionResponse, current_session,
+    request_email_code_signin, request_email_signin, request_password_reset, reset_password,
+    sign_out, signin_with_password, signup_with_password, verify_email_code,
 };
 
 const MAX_BASE_URL_BYTES: usize = 2048;

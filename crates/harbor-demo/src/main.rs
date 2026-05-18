@@ -8,12 +8,12 @@ use std::{
 };
 
 use harbor_core::{
-    Argon2Params, Argon2PasswordHasher, AuthService, ChallengeDelivery, ChallengeId,
-    ChallengePurpose, Clock, EmailChallengeInput, EmailChallengeSignInInput, HmacSecretKey,
-    PasswordPolicy, PasswordSignInInput, PasswordSignUpInput, RedirectPath,
-    RequestPasswordResetInput, ResetPasswordInput, SecretToken, SystemClock, SystemSecretGenerator,
+    Argon2Params, Argon2PasswordHasher, AuthService, ChallengeDelivery, ChallengeId, Clock,
+    EmailChallengeSignInInput, HmacSecretKey, PasswordPolicy, PasswordSignInInput,
+    PasswordSignUpInput, RedirectPath, RequestPasswordResetInput, ResetPasswordInput, SecretToken,
+    SystemClock, SystemSecretGenerator,
 };
-use harbor_email::{AuthMailer, ChallengeEmailInput, EmailRecipient, RecordingMailer};
+use harbor_email::RecordingMailer;
 use harbor_leptos::{CookieDefaults, CsrfRequest, Harbor, build_csrf_cookie, issue_csrf_token};
 use harbor_sqlx::{SqliteAuthStore, SqliteStoreOptions};
 
@@ -538,31 +538,17 @@ async fn handle_email_code_request(
     let form = parse_form(&request.body)?;
     let email = required_form_value(&form, "email")?.to_owned();
     let csrf = csrf_request_from_form(&request, &form);
-    harbor_leptos::validate_csrf_from_headers(
+    let challenge = harbor_leptos::request_email_code_signin(
+        service,
+        mailer,
         config,
-        csrf.cookie_header.as_deref(),
-        csrf.csrf_header.as_deref(),
-    )?;
-    let challenge = service
-        .create_email_challenge(EmailChallengeInput {
-            purpose: ChallengePurpose::EmailSignIn,
-            delivery: ChallengeDelivery::OtpCode,
-            email,
-            user_id: None,
-            redirect_path: Some(RedirectPath::try_new("/account")?),
-        })
-        .await?;
-    let email = harbor_email::render_challenge_email(ChallengeEmailInput {
-        purpose: ChallengePurpose::EmailSignIn,
-        delivery: ChallengeDelivery::OtpCode,
-        to: EmailRecipient::parse(challenge.challenge.email_canonical.as_str())?,
-        challenge_id: challenge.challenge.id.clone(),
-        action_url: None,
-        otp_code: Some(challenge.secret),
-    })?;
-    mailer.send_auth_email(email).await?;
+        csrf,
+        email,
+        Some(RedirectPath::try_new("/account")?),
+    )
+    .await?;
     let code = latest_otp_code(mailer)?;
-    email_code_verify_page(config, challenge.challenge.id.as_str(), &code)
+    email_code_verify_page(config, challenge.challenge_id.as_str(), &code)
 }
 
 fn email_code_verify_page(
