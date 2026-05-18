@@ -11,6 +11,7 @@ publish = false
 [dependencies]
 harbor-core.workspace = true
 harbor-email.workspace = true
+leptos.workspace = true
 
 [lints]
 workspace = true

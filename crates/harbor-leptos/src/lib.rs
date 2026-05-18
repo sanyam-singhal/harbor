@@ -7,7 +7,8 @@
 use core::fmt;
 
 use harbor_core::{
-    ConfigError, ConfigErrorCode, HmacSecretKey, PasswordPolicy, RetryBudget, UnixTimestampMicros,
+    ConfigError, ConfigErrorCode, HmacSecretKey, PasswordPolicy, RetryBudget, SecretToken,
+    UnixTimestampMicros,
 };
 
 /// Version of the `harbor-leptos` crate.
@@ -55,6 +56,66 @@ impl<S, M> Harbor<S, M> {
     pub const fn config(&self) -> &HarborConfig {
         &self.config
     }
+}
+
+/// Harbor value stored in Leptos context.
+#[derive(Debug, Clone)]
+pub struct HarborLeptosContext<S, M> {
+    harbor: Harbor<S, M>,
+}
+
+impl<S, M> HarborLeptosContext<S, M> {
+    /// Creates a context wrapper.
+    #[must_use]
+    pub const fn new(harbor: Harbor<S, M>) -> Self {
+        Self { harbor }
+    }
+
+    /// Returns the wrapped Harbor shell.
+    #[must_use]
+    pub const fn harbor(&self) -> &Harbor<S, M> {
+        &self.harbor
+    }
+
+    /// Consumes the context wrapper.
+    #[must_use]
+    pub fn into_harbor(self) -> Harbor<S, M> {
+        self.harbor
+    }
+}
+
+/// Provides Harbor through Leptos context.
+pub fn provide_harbor_context<S, M>(harbor: Harbor<S, M>)
+where
+    S: Clone + Send + Sync + 'static,
+    M: Clone + Send + Sync + 'static,
+{
+    leptos::prelude::provide_context(HarborLeptosContext::new(harbor));
+}
+
+/// Attempts to load Harbor from Leptos context.
+#[must_use]
+pub fn use_harbor_context<S, M>() -> Option<HarborLeptosContext<S, M>>
+where
+    S: Clone + Send + Sync + 'static,
+    M: Clone + Send + Sync + 'static,
+{
+    leptos::prelude::use_context::<HarborLeptosContext<S, M>>()
+}
+
+/// Loads Harbor from Leptos context.
+///
+/// # Panics
+///
+/// Panics if no [`HarborLeptosContext`] of the requested type exists in the
+/// current Leptos owner.
+#[must_use]
+pub fn expect_harbor_context<S, M>() -> HarborLeptosContext<S, M>
+where
+    S: Clone + Send + Sync + 'static,
+    M: Clone + Send + Sync + 'static,
+{
+    leptos::prelude::expect_context::<HarborLeptosContext<S, M>>()
 }
 
 /// Harbor builder.
@@ -494,6 +555,79 @@ impl CookieDefaults {
     }
 }
 
+/// Builds a `Set-Cookie` value for the Harbor session cookie.
+///
+/// # Errors
+///
+/// Returns [`ConfigError`] when the token is not safe for cookie transport or
+/// the max-age is negative.
+pub fn build_session_cookie(
+    defaults: &CookieDefaults,
+    session_token: &SecretToken,
+    max_age_seconds: Option<i64>,
+) -> Result<String, ConfigError> {
+    build_cookie_header(
+        defaults.session_cookie_name(),
+        session_token.expose_secret(),
+        defaults,
+        defaults.session_http_only(),
+        max_age_seconds,
+    )
+}
+
+/// Builds a deletion `Set-Cookie` value for the Harbor session cookie.
+#[must_use]
+pub fn build_delete_session_cookie(defaults: &CookieDefaults) -> String {
+    build_delete_cookie_header(
+        defaults.session_cookie_name(),
+        defaults,
+        defaults.session_http_only(),
+    )
+}
+
+/// Builds a `Set-Cookie` value for the Harbor CSRF cookie.
+///
+/// # Errors
+///
+/// Returns [`ConfigError`] when the token is not safe for cookie transport or
+/// the max-age is negative.
+pub fn build_csrf_cookie(
+    defaults: &CookieDefaults,
+    csrf_token: &SecretToken,
+    max_age_seconds: Option<i64>,
+) -> Result<String, ConfigError> {
+    build_cookie_header(
+        defaults.csrf_cookie_name(),
+        csrf_token.expose_secret(),
+        defaults,
+        defaults.csrf_http_only(),
+        max_age_seconds,
+    )
+}
+
+/// Builds a deletion `Set-Cookie` value for the Harbor CSRF cookie.
+#[must_use]
+pub fn build_delete_csrf_cookie(defaults: &CookieDefaults) -> String {
+    build_delete_cookie_header(
+        defaults.csrf_cookie_name(),
+        defaults,
+        defaults.csrf_http_only(),
+    )
+}
+
+/// Parses a cookie value from a `Cookie` request header.
+#[must_use]
+pub fn parse_cookie_value(cookie_header: &str, name: &CookieName) -> Option<String> {
+    cookie_header.split(';').find_map(|part| {
+        let (candidate_name, value) = part.trim().split_once('=')?;
+        if candidate_name == name.as_str() {
+            Some(value.to_owned())
+        } else {
+            None
+        }
+    })
+}
+
 /// Validated cookie name.
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub struct CookieName(String);
@@ -695,6 +829,83 @@ impl AuthRateLimits {
     }
 }
 
+fn build_cookie_header(
+    name: &CookieName,
+    value: &str,
+    defaults: &CookieDefaults,
+    http_only: bool,
+    max_age_seconds: Option<i64>,
+) -> Result<String, ConfigError> {
+    validate_cookie_value(value)?;
+    if let Some(max_age_seconds) = max_age_seconds
+        && max_age_seconds < 0
+    {
+        return Err(ConfigError::with_detail(
+            ConfigErrorCode::Invalid,
+            "cookie_max_age",
+        ));
+    }
+
+    let mut header = format!("{}={}; Path={}", name.as_str(), value, defaults.path());
+    if let Some(max_age_seconds) = max_age_seconds {
+        header.push_str("; Max-Age=");
+        header.push_str(max_age_seconds.to_string().as_str());
+    }
+    header.push_str("; SameSite=");
+    header.push_str(same_site_value(defaults.same_site()));
+    if defaults.secure() {
+        header.push_str("; Secure");
+    }
+    if http_only {
+        header.push_str("; HttpOnly");
+    }
+    Ok(header)
+}
+
+fn build_delete_cookie_header(
+    name: &CookieName,
+    defaults: &CookieDefaults,
+    http_only: bool,
+) -> String {
+    let mut header = format!("{}=; Path={}; Max-Age=0", name.as_str(), defaults.path());
+    header.push_str("; SameSite=");
+    header.push_str(same_site_value(defaults.same_site()));
+    if defaults.secure() {
+        header.push_str("; Secure");
+    }
+    if http_only {
+        header.push_str("; HttpOnly");
+    }
+    header
+}
+
+fn validate_cookie_value(value: &str) -> Result<(), ConfigError> {
+    if value.is_empty() {
+        return Err(ConfigError::with_detail(
+            ConfigErrorCode::Invalid,
+            "cookie_value_empty",
+        ));
+    }
+    if value
+        .chars()
+        .any(|character| character.is_control() || matches!(character, ';' | ','))
+    {
+        return Err(ConfigError::with_detail(
+            ConfigErrorCode::Invalid,
+            "cookie_value_chars",
+        ));
+    }
+    Ok(())
+}
+
+fn same_site_value(same_site: SameSite) -> &'static str {
+    match same_site {
+        SameSite::Lax => "Lax",
+        SameSite::Strict => "Strict",
+        SameSite::None => "None",
+    }
+}
+
 fn is_allowed_public_base_url(value: &str) -> bool {
     value.starts_with("https://")
         || value.starts_with("http://localhost")
@@ -703,9 +914,15 @@ fn is_allowed_public_base_url(value: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use harbor_core::SecretToken;
     use harbor_email::RecordingMailer;
+    use leptos::prelude::Owner;
 
-    use super::{CookieDefaults, CookieName, Harbor, PublicBaseUrl, SameSite, UnixTimestampMicros};
+    use super::{
+        CookieDefaults, CookieName, Harbor, PublicBaseUrl, SameSite, UnixTimestampMicros,
+        build_csrf_cookie, build_delete_session_cookie, build_session_cookie, parse_cookie_value,
+        provide_harbor_context, use_harbor_context,
+    };
 
     #[test]
     fn builder_validates_required_configuration() -> Result<(), Box<dyn std::error::Error>> {
@@ -773,6 +990,55 @@ mod tests {
             .with_hmac_secret_key(vec![7; 32])?;
 
         assert!(builder.with_challenge_lifetimes(lifetimes).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn leptos_context_round_trips_harbor_shell() -> Result<(), Box<dyn std::error::Error>> {
+        let harbor = Harbor::builder()
+            .with_store("store")
+            .with_mailer(RecordingMailer::new())
+            .with_public_base_url("http://localhost:3000")?
+            .with_hmac_secret_key(vec![7; 32])?
+            .finish()?;
+        let owner = Owner::new();
+
+        owner.with(|| {
+            provide_harbor_context(harbor.clone());
+            let loaded = use_harbor_context::<&'static str, RecordingMailer>();
+            match loaded {
+                Some(context) => {
+                    assert_eq!(
+                        context.harbor().config().public_base_url().as_str(),
+                        "http://localhost:3000"
+                    );
+                    Ok(())
+                }
+                None => Err("harbor context should be available".into()),
+            }
+        })
+    }
+
+    #[test]
+    fn cookie_helpers_build_parse_and_delete_headers() -> Result<(), Box<dyn std::error::Error>> {
+        let defaults = CookieDefaults::production();
+        let session =
+            build_session_cookie(&defaults, &SecretToken::try_new("sessiontoken")?, Some(60))?;
+        let csrf = build_csrf_cookie(&defaults, &SecretToken::try_new("csrftoken")?, None)?;
+        let parsed = parse_cookie_value(
+            "other=1; __Host-harbor-session=sessiontoken; harbor_csrf=old",
+            defaults.session_cookie_name(),
+        );
+        let delete = build_delete_session_cookie(&defaults);
+
+        assert!(session.contains("__Host-harbor-session=sessiontoken"));
+        assert!(session.contains("Max-Age=60"));
+        assert!(session.contains("Secure"));
+        assert!(session.contains("HttpOnly"));
+        assert!(csrf.contains("__Host-harbor-csrf=csrftoken"));
+        assert!(!csrf.contains("HttpOnly"));
+        assert_eq!(parsed, Some("sessiontoken".to_owned()));
+        assert!(delete.contains("Max-Age=0"));
         Ok(())
     }
 }
