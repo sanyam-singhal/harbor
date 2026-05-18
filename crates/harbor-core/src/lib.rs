@@ -4,6 +4,7 @@
 //! dependency. It owns the invariants that all Harbor integrations must obey.
 
 pub mod domain;
+pub mod error;
 pub mod password;
 pub mod ports;
 pub mod secret;
@@ -14,6 +15,10 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 pub use domain::{
     CanonicalEmail, ChallengeId, DomainError, EmailAddress, RedirectPath, RetryBudget, SecretToken,
     SessionId, TokenHash, UnixTimestampMicros, UserId,
+};
+pub use error::{
+    AuthError, AuthErrorCode, ConfigError, ConfigErrorCode, MailError, MailErrorCode, StoreError,
+    StoreErrorCode,
 };
 pub use password::{
     Argon2Params, Argon2PasswordHasher, CommonPasswordBlocklist, PasswordBlocklist, PasswordError,
