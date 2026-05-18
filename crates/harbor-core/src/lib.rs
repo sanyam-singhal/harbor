@@ -36,7 +36,8 @@ pub use secret::{
 };
 pub use service::{
     AuthService, CurrentSession, EmailChallengeInput, EmailChallengeOutput, PasswordSignInInput,
-    PasswordSignInOutput, PasswordSignUpInput, PasswordSignUpOutput, VerifiedChallenge,
+    PasswordSignInOutput, PasswordSignUpInput, PasswordSignUpOutput, RequestPasswordResetInput,
+    RequestPasswordResetOutput, ResetPasswordInput, ResetPasswordOutput, VerifiedChallenge,
     VerifyChallengeInput,
 };
 pub use store::{

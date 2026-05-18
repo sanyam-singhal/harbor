@@ -5,11 +5,11 @@ use crate::{
     ChallengeRecord, Clock, CommonPasswordBlocklist, CreateChallengeInput, CreateSessionInput,
     CreateUserEmailInput, CreateUserInput, EmailAddress, FindEmailByCanonicalInput,
     GetChallengeInput, GetPasswordCredentialInput, GetSessionInput, HmacSecretKey,
-    InsertPasswordInput, MarkEmailVerifiedInput, PasswordBlocklist, RedirectPath, RetryBudget,
-    RevokeSessionInput, SecretGenerator, SecretHashPurpose, SecretToken, SessionRecord,
-    UserEmailRecord, constant_time_token_hash_eq, hash_secret_token, new_challenge_id,
-    new_session_id, new_user_email_id, new_user_id, random_otp_code, random_session_token,
-    random_url_token,
+    InsertPasswordInput, MarkEmailVerifiedInput, PasswordBlocklist, PasswordCredentialRecord,
+    RedirectPath, RetryBudget, RevokeSessionInput, RevokeUserSessionsInput, SecretGenerator,
+    SecretHashPurpose, SecretToken, SessionRecord, UserEmailRecord, constant_time_token_hash_eq,
+    hash_secret_token, new_challenge_id, new_session_id, new_user_email_id, new_user_id,
+    random_otp_code, random_session_token, random_url_token,
 };
 
 const DEFAULT_IDLE_SESSION_MICROS: i64 = 12 * 60 * 60 * 1_000_000;
@@ -398,6 +398,123 @@ where
             challenge: consumed,
         })
     }
+
+    /// Requests a password reset challenge for a verified email address.
+    ///
+    /// Missing and unverified email addresses produce an empty output so HTTP
+    /// handlers can keep a consistent user-facing response.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AuthError`] when input validation, randomness, hashing, or
+    /// storage fails.
+    pub async fn request_password_reset(
+        &self,
+        input: RequestPasswordResetInput,
+    ) -> Result<RequestPasswordResetOutput, AuthError> {
+        let email = EmailAddress::parse(input.email)
+            .map_err(|_error| AuthError::new(AuthErrorCode::InvalidCredentials))?;
+        let email_record = self
+            .store
+            .find_email_by_canonical(FindEmailByCanonicalInput {
+                email_canonical: email.canonical().clone(),
+            })
+            .await
+            .map_err(AuthError::from)?;
+        let Some(email_record) = email_record else {
+            return Ok(RequestPasswordResetOutput { challenge: None });
+        };
+        if email_record.verified_at.is_none() {
+            return Ok(RequestPasswordResetOutput { challenge: None });
+        }
+
+        let challenge = self
+            .create_email_challenge(EmailChallengeInput {
+                purpose: ChallengePurpose::PasswordReset,
+                delivery: input.delivery,
+                email: email_record.email_original,
+                user_id: Some(email_record.user_id),
+                redirect_path: input.redirect_path,
+            })
+            .await?;
+
+        Ok(RequestPasswordResetOutput {
+            challenge: Some(challenge),
+        })
+    }
+
+    /// Consumes a password reset challenge and replaces the password.
+    ///
+    /// This method revokes all existing sessions for the user and deliberately
+    /// does not create a new session.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AuthError`] when the challenge is invalid, the password is
+    /// rejected, hashing fails, or persistence fails.
+    pub async fn reset_password(
+        &self,
+        input: ResetPasswordInput,
+    ) -> Result<ResetPasswordOutput, AuthError> {
+        let password_hash = self
+            .password_hasher
+            .hash_password(
+                &input.new_password,
+                &self.password_blocklist,
+                &self.generator,
+            )
+            .map_err(|_error| AuthError::new(AuthErrorCode::InvalidCredentials))?;
+        let verified = self
+            .verify_email_challenge(VerifyChallengeInput {
+                challenge_id: input.challenge_id,
+                purpose: ChallengePurpose::PasswordReset,
+                secret: input.secret,
+            })
+            .await?;
+        let user_id = verified
+            .challenge
+            .user_id
+            .clone()
+            .ok_or_else(|| AuthError::new(AuthErrorCode::InvalidCredentials))?;
+        let existing = self
+            .store
+            .get_password_credential(GetPasswordCredentialInput {
+                user_id: user_id.clone(),
+            })
+            .await
+            .map_err(AuthError::from)?;
+        let password_version = match existing {
+            Some(credential) => credential.password_version.checked_add(1).ok_or_else(|| {
+                AuthError::with_detail(AuthErrorCode::Internal, "password_version")
+            })?,
+            None => 1,
+        };
+        let now = self.clock.now();
+        let credential = self
+            .store
+            .upsert_password_credential(InsertPasswordInput {
+                user_id: user_id.clone(),
+                password_hash,
+                password_set_at: now,
+                password_version,
+            })
+            .await
+            .map_err(AuthError::from)?;
+        let revoked_sessions = self
+            .store
+            .revoke_user_sessions(RevokeUserSessionsInput {
+                user_id,
+                revoked_at: now,
+            })
+            .await
+            .map_err(AuthError::from)?;
+
+        Ok(ResetPasswordOutput {
+            challenge: verified.challenge,
+            credential,
+            revoked_sessions,
+        })
+    }
 }
 
 fn challenge_lifetime(purpose: ChallengePurpose) -> i64 {
@@ -502,4 +619,44 @@ pub struct VerifyChallengeInput {
 pub struct VerifiedChallenge {
     /// Consumed challenge.
     pub challenge: ChallengeRecord,
+}
+
+/// Password reset request input.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RequestPasswordResetInput {
+    /// Email address requesting a reset.
+    pub email: String,
+    /// Delivery style.
+    pub delivery: ChallengeDelivery,
+    /// Optional post-reset redirect.
+    pub redirect_path: Option<RedirectPath>,
+}
+
+/// Password reset request output.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RequestPasswordResetOutput {
+    /// Challenge to send when the email is verified and known.
+    pub challenge: Option<EmailChallengeOutput>,
+}
+
+/// Password reset confirmation input.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResetPasswordInput {
+    /// Password reset challenge id.
+    pub challenge_id: crate::ChallengeId,
+    /// Presented challenge secret.
+    pub secret: SecretToken,
+    /// Replacement password.
+    pub new_password: String,
+}
+
+/// Password reset confirmation output.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResetPasswordOutput {
+    /// Consumed password reset challenge.
+    pub challenge: ChallengeRecord,
+    /// Replacement password credential.
+    pub credential: PasswordCredentialRecord,
+    /// Number of sessions revoked after reset.
+    pub revoked_sessions: u64,
 }

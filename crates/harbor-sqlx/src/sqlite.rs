@@ -1611,6 +1611,123 @@ mod tests {
         Ok(())
     }
 
+    #[tokio::test(flavor = "current_thread")]
+    async fn password_reset_service_is_enumeration_resistant_and_revokes_sessions()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let store = migrated_store().await?;
+        let service = AuthService::new(
+            store,
+            FixedClock::new(now()),
+            DeterministicSecretGenerator::new(),
+            HmacSecretKey::try_new(vec![9; 32])?,
+            Argon2PasswordHasher::new(
+                PasswordPolicy::try_new(8, 128)?,
+                Argon2Params::try_new(32, 1, 1)?,
+            ),
+        );
+
+        let signup = service
+            .sign_up_with_password(harbor_core::PasswordSignUpInput {
+                email: "reset@example.com".to_owned(),
+                password: "correct horse battery staple".to_owned(),
+            })
+            .await?;
+        let confirmation = service
+            .create_email_challenge(harbor_core::EmailChallengeInput {
+                purpose: ChallengePurpose::SignupConfirmation,
+                delivery: ChallengeDelivery::MagicLink,
+                email: signup.email.email_original.clone(),
+                user_id: Some(signup.user.id.clone()),
+                redirect_path: None,
+            })
+            .await?;
+        service
+            .verify_email_challenge(harbor_core::VerifyChallengeInput {
+                challenge_id: confirmation.challenge.id,
+                purpose: ChallengePurpose::SignupConfirmation,
+                secret: confirmation.secret,
+            })
+            .await?;
+
+        let signin = service
+            .sign_in_with_password(harbor_core::PasswordSignInInput {
+                email: "reset@example.com".to_owned(),
+                password: "correct horse battery staple".to_owned(),
+                redirect_path: None,
+            })
+            .await?;
+        assert!(
+            service
+                .current_session(&signin.session_token)
+                .await?
+                .is_some()
+        );
+
+        let unknown = service
+            .request_password_reset(harbor_core::RequestPasswordResetInput {
+                email: "unknown@example.com".to_owned(),
+                delivery: ChallengeDelivery::MagicLink,
+                redirect_path: Some(RedirectPath::try_new("/account")?),
+            })
+            .await?;
+        assert_eq!(unknown.challenge, None);
+
+        let reset_request = service
+            .request_password_reset(harbor_core::RequestPasswordResetInput {
+                email: "RESET@example.com".to_owned(),
+                delivery: ChallengeDelivery::MagicLink,
+                redirect_path: Some(RedirectPath::try_new("/account")?),
+            })
+            .await?;
+        let reset_challenge = match reset_request.challenge {
+            Some(challenge) => challenge,
+            None => return Err("verified email should receive a reset challenge".into()),
+        };
+
+        let reset = service
+            .reset_password(harbor_core::ResetPasswordInput {
+                challenge_id: reset_challenge.challenge.id,
+                secret: reset_challenge.secret,
+                new_password: "new correct horse battery staple".to_owned(),
+            })
+            .await?;
+        assert_eq!(reset.credential.password_version, 2);
+        assert_eq!(reset.revoked_sessions, 1);
+        assert_eq!(
+            reset.challenge.redirect_path,
+            Some(RedirectPath::try_new("/account")?)
+        );
+        assert_eq!(service.current_session(&signin.session_token).await?, None);
+
+        let old_password = service
+            .sign_in_with_password(harbor_core::PasswordSignInInput {
+                email: "reset@example.com".to_owned(),
+                password: "correct horse battery staple".to_owned(),
+                redirect_path: None,
+            })
+            .await;
+        let old_password = match old_password {
+            Ok(_) => return Err("old password should fail after reset".into()),
+            Err(error) => error,
+        };
+        assert_eq!(old_password.code(), AuthErrorCode::InvalidCredentials);
+
+        let new_password = service
+            .sign_in_with_password(harbor_core::PasswordSignInInput {
+                email: "reset@example.com".to_owned(),
+                password: "new correct horse battery staple".to_owned(),
+                redirect_path: None,
+            })
+            .await?;
+        assert!(
+            service
+                .current_session(&new_password.session_token)
+                .await?
+                .is_some()
+        );
+        Ok(())
+    }
+
     #[test]
     fn auth_event_id_is_available_for_later_store_slices() -> Result<(), harbor_core::DomainError> {
         let id = AuthEventId::try_new("event00000000001")?;
