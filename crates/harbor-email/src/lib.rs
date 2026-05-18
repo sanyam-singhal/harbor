@@ -388,6 +388,27 @@ impl ResendMailer {
     pub fn from(&self) -> &str {
         &self.from
     }
+
+    #[cfg(test)]
+    fn with_base_url(
+        api_key: impl Into<String>,
+        from: impl Into<String>,
+        base_url: &str,
+    ) -> Result<Self, MailError> {
+        let api_key = api_key.into();
+        let from = from.into();
+        validate_resend_api_key(&api_key)?;
+        validate_resend_from(&from)?;
+        let base_url = base_url
+            .parse()
+            .map_err(|_error| MailError::with_detail(MailErrorCode::InvalidConfig, "base_url"))?;
+        let client = Resend::with_config(
+            resend_rs::Config::builder(api_key)
+                .base_url(base_url)
+                .build(),
+        );
+        Ok(Self { client, from })
+    }
 }
 
 #[cfg(feature = "email-resend")]
@@ -591,153 +612,4 @@ fn escape_html(value: &str) -> String {
 }
 
 #[cfg(test)]
-mod tests {
-    use harbor_core::{ChallengeDelivery, ChallengeId, ChallengePurpose, SecretToken};
-
-    use super::{
-        AuthMailer, ChallengeEmailInput, EmailRecipient, RecordingMailer, SecretUrl,
-        render_challenge_email,
-    };
-
-    #[tokio::test(flavor = "current_thread")]
-    async fn recording_mailer_captures_rendered_email() -> Result<(), Box<dyn std::error::Error>> {
-        let mailer = RecordingMailer::new();
-        let email = render_challenge_email(ChallengeEmailInput {
-            purpose: ChallengePurpose::SignupConfirmation,
-            delivery: ChallengeDelivery::MagicLink,
-            to: EmailRecipient::parse("User@Example.com")?,
-            challenge_id: ChallengeId::try_new("challenge00000001")?,
-            action_url: Some(SecretUrl::try_new(
-                "https://issuecertificate.com/auth/confirm-email?challenge=challenge00000001&token=abc",
-            )?),
-            otp_code: None,
-        })?;
-
-        mailer.send_auth_email(email).await?;
-        let recorded = mailer.recorded()?;
-        let sent = match recorded.as_slice() {
-            [email] => email,
-            _ => return Err("one email should be recorded".into()),
-        };
-
-        assert_eq!(sent.to().canonical().as_str(), "user@example.com");
-        assert_eq!(sent.to().original(), "User@Example.com");
-        assert_eq!(sent.kind(), ChallengePurpose::SignupConfirmation);
-        assert_eq!(sent.challenge_id().as_str(), "challenge00000001");
-        assert_eq!(sent.subject(), "Confirm your Harbor email");
-        assert!(
-            sent.text_body()
-                .contains("https://issuecertificate.com/auth/confirm-email")
-        );
-        assert!(!format!("{sent:?}").contains("abc"));
-        mailer.clear()?;
-        assert!(mailer.recorded()?.is_empty());
-        Ok(())
-    }
-
-    #[test]
-    fn template_requires_secret_matching_delivery() -> Result<(), Box<dyn std::error::Error>> {
-        let result = render_challenge_email(ChallengeEmailInput {
-            purpose: ChallengePurpose::EmailSignIn,
-            delivery: ChallengeDelivery::OtpCode,
-            to: EmailRecipient::parse("user@example.com")?,
-            challenge_id: ChallengeId::try_new("challenge00000001")?,
-            action_url: None,
-            otp_code: None,
-        });
-
-        assert!(result.is_err());
-        Ok(())
-    }
-
-    #[test]
-    fn otp_template_renders_code_and_escapes_html() -> Result<(), Box<dyn std::error::Error>> {
-        let email = render_challenge_email(ChallengeEmailInput {
-            purpose: ChallengePurpose::EmailSignIn,
-            delivery: ChallengeDelivery::OtpCode,
-            to: EmailRecipient::parse("user@example.com")?,
-            challenge_id: ChallengeId::try_new("challenge00000001")?,
-            action_url: None,
-            otp_code: Some(SecretToken::try_new("12345678")?),
-        })?;
-        let html = match email.html_body() {
-            Some(html) => html,
-            None => return Err("html body should render".into()),
-        };
-
-        assert!(email.text_body().contains("12345678"));
-        assert!(html.contains("<strong>12345678</strong>"));
-        assert!(!format!("{email:?}").contains("12345678"));
-        Ok(())
-    }
-
-    #[test]
-    fn combined_template_renders_link_code_and_html_escapes()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let secret_url =
-            SecretUrl::try_new("https://issuecertificate.com/auth/email-link?x=<tag>&quote=\"'")?;
-        let email = render_challenge_email(ChallengeEmailInput {
-            purpose: ChallengePurpose::PasswordReset,
-            delivery: ChallengeDelivery::Both,
-            to: EmailRecipient::parse("user@example.com")?,
-            challenge_id: ChallengeId::try_new("challenge00000002")?,
-            action_url: Some(secret_url.clone()),
-            otp_code: Some(SecretToken::try_new("87654321")?),
-        })?;
-        let html = match email.html_body() {
-            Some(html) => html,
-            None => return Err("html body should render".into()),
-        };
-
-        assert_eq!(email.subject(), "Reset your Harbor password");
-        assert!(email.text_body().contains(secret_url.expose_secret()));
-        assert!(email.text_body().contains("87654321"));
-        assert!(html.contains("&lt;tag&gt;"));
-        assert!(html.contains("&quot;&#39;"));
-        assert_eq!(format!("{secret_url:?}"), "SecretUrl([REDACTED])");
-        Ok(())
-    }
-
-    #[test]
-    fn secret_urls_require_https_except_local_development() {
-        assert!(SecretUrl::try_new("https://issuecertificate.com/auth/email-link").is_ok());
-        assert!(SecretUrl::try_new("http://localhost:3000/auth/email-link").is_ok());
-        assert!(SecretUrl::try_new("http://127.0.0.1:3000/auth/email-link").is_ok());
-        assert!(SecretUrl::try_new("").is_err());
-        assert!(SecretUrl::try_new(format!("https://{}", "a".repeat(4097))).is_err());
-        assert!(SecretUrl::try_new("https://issuecertificate.com/\n").is_err());
-        assert!(SecretUrl::try_new("http://example.com/auth/email-link").is_err());
-    }
-
-    #[test]
-    fn invalid_recipient_maps_to_mail_error() {
-        assert!(EmailRecipient::parse("not-an-email").is_err());
-    }
-
-    #[cfg(feature = "email-resend")]
-    #[test]
-    fn resend_mailer_validates_configuration_without_sending() {
-        assert!(super::ResendMailer::new("", "Harbor <auth@example.com>").is_err());
-        assert!(super::ResendMailer::new("re_\n", "Harbor <auth@example.com>").is_err());
-        assert!(super::ResendMailer::new("not-a-resend-key", "Harbor <auth@example.com>").is_err());
-        assert!(super::ResendMailer::new("re_test", "").is_err());
-        assert!(super::ResendMailer::new("re_test", "a".repeat(321)).is_err());
-        assert!(super::ResendMailer::new("re_test", "Harbor\n<auth@example.com>").is_err());
-        assert!(super::ResendMailer::new("re_test", "missing-at").is_err());
-
-        let mailer = super::ResendMailer::new("re_test", "Harbor <auth@example.com>");
-        assert!(mailer.is_ok());
-    }
-
-    #[cfg(feature = "email-resend")]
-    #[test]
-    fn resend_mailer_debug_redacts_client() -> Result<(), Box<dyn std::error::Error>> {
-        let mailer = super::ResendMailer::new("re_test", "Harbor <auth@example.com>")?;
-
-        assert_eq!(mailer.from(), "Harbor <auth@example.com>");
-        let debug = format!("{mailer:?}");
-        assert!(debug.contains("ResendMailer"));
-        assert!(!debug.contains("re_test"));
-        Ok(())
-    }
-}
+mod tests;

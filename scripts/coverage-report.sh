@@ -18,10 +18,11 @@ Options:
   -h, --help             Show this help.
 
 Environment:
-  HARBOR_COVERAGE_FAIL_UNDER_LINES    Minimum line coverage. Default: 75.
-  HARBOR_COVERAGE_FAIL_UNDER_REGIONS  Minimum region coverage. Default: 70.
+  HARBOR_COVERAGE_FAIL_UNDER_LINES    Minimum line coverage. Default: 90.
+  HARBOR_COVERAGE_FAIL_UNDER_REGIONS  Minimum region coverage. Default: 90.
   HARBOR_COVERAGE_IGNORE_FILENAME_REGEX
-                                     Files omitted from reports. Default: harbor-demo/src/main.rs.
+                                     Files omitted from reports. Default excludes the demo
+                                     binary harness and test-support helper crate.
 
 Outputs:
   .local/coverage/summary.md
@@ -40,9 +41,9 @@ EOF
 packages=()
 feature_args=()
 output_dir=".local/coverage"
-fail_under_lines="${HARBOR_COVERAGE_FAIL_UNDER_LINES:-75}"
-fail_under_regions="${HARBOR_COVERAGE_FAIL_UNDER_REGIONS:-70}"
-ignore_filename_regex="${HARBOR_COVERAGE_IGNORE_FILENAME_REGEX:-harbor-demo/src/main.rs}"
+fail_under_lines="${HARBOR_COVERAGE_FAIL_UNDER_LINES:-90}"
+fail_under_regions="${HARBOR_COVERAGE_FAIL_UNDER_REGIONS:-90}"
+ignore_filename_regex="${HARBOR_COVERAGE_IGNORE_FILENAME_REGEX:-harbor-demo/src/.*|harbor-test-support/src/.*}"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
