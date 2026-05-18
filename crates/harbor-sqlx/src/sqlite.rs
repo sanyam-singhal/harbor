@@ -6,12 +6,13 @@ use std::str::FromStr;
 use std::time::Duration;
 
 use harbor_core::{
-    CanonicalEmail, ChallengeDelivery, ChallengeId, ChallengePurpose, ChallengeRecord,
-    ChallengeStore, CreateChallengeInput, CreateSessionInput, CreateUserEmailInput,
-    CreateUserInput, DeleteExpiredSessionsInput, DomainError, FindEmailByCanonicalInput,
-    GetChallengeInput, GetPasswordCredentialInput, GetSessionInput, GetUserInput,
-    IncrementChallengeAttemptsInput, InsertPasswordInput, MarkEmailVerifiedInput,
-    PasswordCredentialRecord, PasswordCredentialStore, RedirectPath, RetryBudget,
+    AppendAuthEventInput, AuthEventKind, AuthEventRecord, AuthEventStore, CanonicalEmail,
+    ChallengeDelivery, ChallengeId, ChallengePurpose, ChallengeRecord, ChallengeStore,
+    CreateChallengeInput, CreateSessionInput, CreateUserEmailInput, CreateUserInput,
+    DeleteExpiredSessionsInput, DomainError, FindEmailByCanonicalInput, GetChallengeInput,
+    GetPasswordCredentialInput, GetSessionInput, GetUserInput, IncrementChallengeAttemptsInput,
+    IncrementRateLimitInput, InsertPasswordInput, MarkEmailVerifiedInput, PasswordCredentialRecord,
+    PasswordCredentialStore, RateLimitDecision, RateLimitStore, RedirectPath, RetryBudget,
     RevokeSessionInput, RevokeUserSessionsInput, SessionId, SessionRecord, SessionStore,
     StoreError, StoreErrorCode, TokenHash, UnixTimestampMicros, UpdateSessionLastSeenInput,
     UserEmailRecord, UserEmailStore, UserId, UserRecord, UserStore,
@@ -590,6 +591,77 @@ impl SessionStore for SqliteAuthStore {
     }
 }
 
+impl RateLimitStore for SqliteAuthStore {
+    fn increment_rate_limit(
+        &self,
+        input: IncrementRateLimitInput,
+    ) -> impl Future<Output = Result<RateLimitDecision, StoreError>> + Send {
+        let pool = self.pool.clone();
+        async move {
+            let row = sqlx::query(
+                "INSERT INTO harbor_rate_limits (scope, key_hash, window_start_unix_micros, count) \
+                 VALUES (?1, ?2, ?3, 1) \
+                 ON CONFLICT(scope, key_hash, window_start_unix_micros) DO UPDATE SET \
+                   count = count + 1 \
+                 RETURNING count",
+            )
+            .bind(&input.scope)
+            .bind(input.key_hash.as_bytes())
+            .bind(input.window_start.as_i64())
+            .fetch_one(&pool)
+            .await
+            .map_err(|error| map_sqlx_error(error, "increment_rate_limit"))?;
+            let count = usize::try_from(get_i64(&row, "count")?).map_err(|_error| {
+                StoreError::with_detail(StoreErrorCode::CorruptData, "rate_limit_count")
+            })?;
+
+            Ok(RateLimitDecision {
+                count,
+                allowed: count <= input.max_count.get(),
+            })
+        }
+    }
+}
+
+impl AuthEventStore for SqliteAuthStore {
+    fn append_auth_event(
+        &self,
+        input: AppendAuthEventInput,
+    ) -> impl Future<Output = Result<AuthEventRecord, StoreError>> + Send {
+        let pool = self.pool.clone();
+        async move {
+            sqlx::query(
+                "INSERT INTO harbor_auth_events \
+                 (id, user_id, email_canonical, kind, occurred_at_unix_micros, \
+                  ip_hash, user_agent_hash, detail_code) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            )
+            .bind(input.id.as_str())
+            .bind(input.user_id.as_ref().map(UserId::as_str))
+            .bind(input.email_canonical.as_ref().map(CanonicalEmail::as_str))
+            .bind(auth_event_kind_to_db(input.kind))
+            .bind(input.occurred_at.as_i64())
+            .bind(input.ip_hash.as_ref().map(TokenHash::as_bytes))
+            .bind(input.user_agent_hash.as_ref().map(TokenHash::as_bytes))
+            .bind(input.detail_code.as_deref())
+            .execute(&pool)
+            .await
+            .map_err(|error| map_sqlx_error(error, "append_auth_event"))?;
+
+            Ok(AuthEventRecord {
+                id: input.id,
+                user_id: input.user_id,
+                email_canonical: input.email_canonical,
+                kind: input.kind,
+                occurred_at: input.occurred_at,
+                ip_hash: input.ip_hash,
+                user_agent_hash: input.user_agent_hash,
+                detail_code: input.detail_code,
+            })
+        }
+    }
+}
+
 async fn find_email_by_canonical(
     pool: &SqlitePool,
     email_canonical: CanonicalEmail,
@@ -745,6 +817,19 @@ fn session_from_row(row: &sqlx::sqlite::SqliteRow) -> Result<SessionRecord, Stor
     })
 }
 
+fn auth_event_kind_to_db(value: AuthEventKind) -> &'static str {
+    match value {
+        AuthEventKind::SignupRequested => "signup_requested",
+        AuthEventKind::EmailVerified => "email_verified",
+        AuthEventKind::SignInSucceeded => "sign_in_succeeded",
+        AuthEventKind::SignInFailed => "sign_in_failed",
+        AuthEventKind::PasswordResetRequested => "password_reset_requested",
+        AuthEventKind::PasswordResetCompleted => "password_reset_completed",
+        AuthEventKind::SessionRevoked => "session_revoked",
+        _ => "unknown",
+    }
+}
+
 fn get_string(row: &sqlx::sqlite::SqliteRow, column: &'static str) -> Result<String, StoreError> {
     row.try_get(column)
         .map_err(|error| map_sqlx_error(error, column))
@@ -869,15 +954,17 @@ impl fmt::Debug for SqliteAuthStore {
 #[cfg(test)]
 mod tests {
     use harbor_core::{
-        AuthEventId, ChallengeDelivery, ChallengeId, ChallengePurpose, ChallengeStore,
-        CreateChallengeInput, CreateSessionInput, CreateUserEmailInput, CreateUserInput,
-        DeleteExpiredSessionsInput, EmailAddress, FindEmailByCanonicalInput, GetChallengeInput,
-        GetPasswordCredentialInput, GetSessionInput, GetUserInput, IncrementChallengeAttemptsInput,
+        AppendAuthEventInput, AuthEventId, AuthEventKind, AuthEventStore, ChallengeDelivery,
+        ChallengeId, ChallengePurpose, ChallengeStore, CreateChallengeInput, CreateSessionInput,
+        CreateUserEmailInput, CreateUserInput, DeleteExpiredSessionsInput, EmailAddress,
+        FindEmailByCanonicalInput, GetChallengeInput, GetPasswordCredentialInput, GetSessionInput,
+        GetUserInput, IncrementChallengeAttemptsInput, IncrementRateLimitInput,
         InsertPasswordInput, MarkEmailVerifiedInput, PasswordCredentialStore, PasswordHashString,
-        RedirectPath, RetryBudget, RevokeSessionInput, RevokeUserSessionsInput, SessionId,
-        SessionStore, StoreErrorCode, TokenHash, UnixTimestampMicros, UpdateSessionLastSeenInput,
-        UserEmailId, UserEmailStore, UserId, UserStore,
+        RateLimitStore, RedirectPath, RetryBudget, RevokeSessionInput, RevokeUserSessionsInput,
+        SessionId, SessionStore, StoreErrorCode, TokenHash, UnixTimestampMicros,
+        UpdateSessionLastSeenInput, UserEmailId, UserEmailStore, UserId, UserStore,
     };
+    use sqlx::Row;
 
     use super::{SqliteAuthStore, SqliteStoreOptions};
 
@@ -1264,6 +1351,91 @@ mod tests {
             })
             .await?;
         assert_eq!(revoked_count, 1);
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn increments_rate_limits_with_boundary_decision()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let store = migrated_store().await?;
+        let key_hash = token_hash()?;
+        let max_count = RetryBudget::try_new(2)?;
+
+        let first = store
+            .increment_rate_limit(IncrementRateLimitInput {
+                scope: "signin".to_owned(),
+                key_hash: key_hash.clone(),
+                window_start: now(),
+                max_count,
+            })
+            .await?;
+        let second = store
+            .increment_rate_limit(IncrementRateLimitInput {
+                scope: "signin".to_owned(),
+                key_hash: key_hash.clone(),
+                window_start: now(),
+                max_count,
+            })
+            .await?;
+        let third = store
+            .increment_rate_limit(IncrementRateLimitInput {
+                scope: "signin".to_owned(),
+                key_hash,
+                window_start: now(),
+                max_count,
+            })
+            .await?;
+
+        assert_eq!(first.count, 1);
+        assert!(first.allowed);
+        assert_eq!(second.count, 2);
+        assert!(second.allowed);
+        assert_eq!(third.count, 3);
+        assert!(!third.allowed);
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn appends_auth_events_with_hashed_metadata() -> Result<(), Box<dyn std::error::Error>> {
+        let store = migrated_store().await?;
+        let user_id = user_id()?;
+        let email = EmailAddress::parse("user@example.com")?;
+        let ip_hash = token_hash()?;
+        let user_agent_hash = second_token_hash()?;
+
+        store
+            .create_user(CreateUserInput {
+                id: user_id.clone(),
+                now: now(),
+            })
+            .await?;
+        let event = store
+            .append_auth_event(AppendAuthEventInput {
+                id: AuthEventId::try_new("event00000000001")?,
+                user_id: Some(user_id),
+                email_canonical: Some(email.canonical().clone()),
+                kind: AuthEventKind::SignInSucceeded,
+                occurred_at: now(),
+                ip_hash: Some(ip_hash.clone()),
+                user_agent_hash: Some(user_agent_hash.clone()),
+                detail_code: Some("password".to_owned()),
+            })
+            .await?;
+
+        let row = sqlx::query(
+            "SELECT ip_hash, user_agent_hash, detail_code FROM harbor_auth_events WHERE id = ?1",
+        )
+        .bind(event.id.as_str())
+        .fetch_one(store.pool())
+        .await?;
+        let stored_ip_hash: Vec<u8> = row.try_get("ip_hash")?;
+        let stored_user_agent_hash: Vec<u8> = row.try_get("user_agent_hash")?;
+        let detail_code: String = row.try_get("detail_code")?;
+
+        assert_eq!(stored_ip_hash, ip_hash.as_bytes());
+        assert_eq!(stored_user_agent_hash, user_agent_hash.as_bytes());
+        assert_eq!(detail_code, "password");
+        assert_eq!(event.kind, AuthEventKind::SignInSucceeded);
         Ok(())
     }
 
