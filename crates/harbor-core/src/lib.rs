@@ -38,7 +38,7 @@ pub use store::{
     CreateSessionInput, CreateUserEmailInput, CreateUserInput, DeleteExpiredSessionsInput,
     FindEmailByCanonicalInput, GetChallengeInput, GetPasswordCredentialInput, GetSessionInput,
     GetUserInput, IncrementChallengeAttemptsInput, IncrementRateLimitInput, InsertPasswordInput,
-    MarkEmailVerifiedInput, PasswordCredentialRecord, RateLimitDecision, RateLimitStore,
-    RevokeSessionInput, RevokeUserSessionsInput, SessionRecord, SessionStore,
+    MarkEmailVerifiedInput, PasswordCredentialRecord, PasswordCredentialStore, RateLimitDecision,
+    RateLimitStore, RevokeSessionInput, RevokeUserSessionsInput, SessionRecord, SessionStore,
     UpdateSessionLastSeenInput, UserEmailRecord, UserEmailStore, UserRecord, UserStore,
 };
