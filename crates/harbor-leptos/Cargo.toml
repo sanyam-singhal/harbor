@@ -8,7 +8,12 @@ repository.workspace = true
 authors.workspace = true
 publish = false
 
+[features]
+default = []
+axum = ["dep:axum"]
+
 [dependencies]
+axum = { workspace = true, optional = true }
 harbor-core.workspace = true
 harbor-email.workspace = true
 leptos.workspace = true
