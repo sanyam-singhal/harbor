@@ -1,0 +1,18 @@
+[package]
+name = "harbor-demo"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish = false
+
+[dependencies]
+harbor-core.workspace = true
+harbor-email.workspace = true
+harbor-leptos.workspace = true
+harbor-sqlx.workspace = true
+
+[lints]
+workspace = true

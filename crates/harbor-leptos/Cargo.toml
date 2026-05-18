@@ -1,0 +1,16 @@
+[package]
+name = "harbor-leptos"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish = false
+
+[dependencies]
+harbor-core.workspace = true
+harbor-email.workspace = true
+
+[lints]
+workspace = true
