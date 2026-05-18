@@ -954,16 +954,19 @@ impl fmt::Debug for SqliteAuthStore {
 #[cfg(test)]
 mod tests {
     use harbor_core::{
-        AppendAuthEventInput, AuthEventId, AuthEventKind, AuthEventStore, ChallengeDelivery,
-        ChallengeId, ChallengePurpose, ChallengeStore, CreateChallengeInput, CreateSessionInput,
+        AppendAuthEventInput, Argon2Params, Argon2PasswordHasher, AuthErrorCode, AuthEventId,
+        AuthEventKind, AuthEventStore, AuthService, ChallengeDelivery, ChallengeId,
+        ChallengePurpose, ChallengeStore, CreateChallengeInput, CreateSessionInput,
         CreateUserEmailInput, CreateUserInput, DeleteExpiredSessionsInput, EmailAddress,
         FindEmailByCanonicalInput, GetChallengeInput, GetPasswordCredentialInput, GetSessionInput,
-        GetUserInput, IncrementChallengeAttemptsInput, IncrementRateLimitInput,
+        GetUserInput, HmacSecretKey, IncrementChallengeAttemptsInput, IncrementRateLimitInput,
         InsertPasswordInput, MarkEmailVerifiedInput, PasswordCredentialStore, PasswordHashString,
-        RateLimitStore, RedirectPath, RetryBudget, RevokeSessionInput, RevokeUserSessionsInput,
-        SessionId, SessionStore, StoreErrorCode, TokenHash, UnixTimestampMicros,
-        UpdateSessionLastSeenInput, UserEmailId, UserEmailStore, UserId, UserStore,
+        PasswordPolicy, RateLimitStore, RedirectPath, RetryBudget, RevokeSessionInput,
+        RevokeUserSessionsInput, SessionId, SessionStore, StoreErrorCode, TokenHash,
+        UnixTimestampMicros, UpdateSessionLastSeenInput, UserEmailId, UserEmailStore, UserId,
+        UserStore,
     };
+    use harbor_test_support::{DeterministicSecretGenerator, FixedClock};
     use sqlx::Row;
 
     use super::{SqliteAuthStore, SqliteStoreOptions};
@@ -1445,6 +1448,68 @@ mod tests {
         let store = migrated_store().await?;
 
         harbor_test_support::store_contracts::run_auth_store_contracts(store).await
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn password_service_signup_signin_current_session_and_signout()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let store = migrated_store().await?;
+        let service = AuthService::new(
+            store.clone(),
+            FixedClock::new(now()),
+            DeterministicSecretGenerator::new(),
+            HmacSecretKey::try_new(vec![9; 32])?,
+            Argon2PasswordHasher::new(
+                PasswordPolicy::try_new(8, 128)?,
+                Argon2Params::try_new(32, 1, 1)?,
+            ),
+        );
+
+        let signup = service
+            .sign_up_with_password(harbor_core::PasswordSignUpInput {
+                email: "service@example.com".to_owned(),
+                password: "correct horse battery staple".to_owned(),
+            })
+            .await?;
+        let unverified = service
+            .sign_in_with_password(harbor_core::PasswordSignInInput {
+                email: "service@example.com".to_owned(),
+                password: "correct horse battery staple".to_owned(),
+                redirect_path: Some(RedirectPath::try_new("/account")?),
+            })
+            .await;
+        let unverified = match unverified {
+            Ok(_) => return Err("unverified signin should fail".into()),
+            Err(error) => error,
+        };
+        assert_eq!(unverified.code(), AuthErrorCode::EmailNotVerified);
+
+        store
+            .mark_email_verified(MarkEmailVerifiedInput {
+                email_canonical: signup.email.email_canonical.clone(),
+                verified_at: now(),
+            })
+            .await?;
+        let signin = service
+            .sign_in_with_password(harbor_core::PasswordSignInInput {
+                email: "SERVICE@example.com".to_owned(),
+                password: "correct horse battery staple".to_owned(),
+                redirect_path: Some(RedirectPath::try_new("/account")?),
+            })
+            .await?;
+        assert_eq!(
+            signin.redirect_path,
+            Some(RedirectPath::try_new("/account")?)
+        );
+
+        let current = service.current_session(&signin.session_token).await?;
+        assert!(current.is_some());
+
+        let signed_out = service.sign_out(&signin.session_token).await?;
+        assert!(signed_out);
+        let current_after_signout = service.current_session(&signin.session_token).await?;
+        assert_eq!(current_after_signout, None);
+        Ok(())
     }
 
     #[test]

@@ -8,6 +8,7 @@ pub mod error;
 pub mod password;
 pub mod ports;
 pub mod secret;
+pub mod service;
 pub mod store;
 
 /// Version of the `harbor-core` crate.
@@ -26,11 +27,16 @@ pub use password::{
     PasswordHashError, PasswordHashString, PasswordPolicy, PasswordVerification,
 };
 pub use ports::{
-    Clock, RandomError, SecretGenerator, SystemClock, SystemSecretGenerator, new_challenge_id,
-    new_session_id, new_user_id, random_otp_code, random_session_token, random_url_token,
+    Clock, RandomError, SecretGenerator, SystemClock, SystemSecretGenerator, new_auth_event_id,
+    new_challenge_id, new_session_id, new_user_email_id, new_user_id, random_otp_code,
+    random_session_token, random_url_token,
 };
 pub use secret::{
     HmacSecretKey, SecretHashPurpose, constant_time_token_hash_eq, hash_secret, hash_secret_token,
+};
+pub use service::{
+    AuthService, CurrentSession, PasswordSignInInput, PasswordSignInOutput, PasswordSignUpInput,
+    PasswordSignUpOutput,
 };
 pub use store::{
     AppendAuthEventInput, AuthEventKind, AuthEventRecord, AuthEventStore, AuthStore,

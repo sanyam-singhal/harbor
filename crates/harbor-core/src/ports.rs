@@ -4,7 +4,8 @@ use core::fmt;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::domain::{
-    ChallengeId, DomainError, SecretToken, SessionId, UnixTimestampMicros, UserId,
+    AuthEventId, ChallengeId, DomainError, SecretToken, SessionId, UnixTimestampMicros,
+    UserEmailId, UserId,
 };
 
 const OPAQUE_ID_BYTES: usize = 16;
@@ -116,6 +117,26 @@ pub fn new_session_id(generator: &impl SecretGenerator) -> Result<SessionId, Ran
 /// fails validation.
 pub fn new_challenge_id(generator: &impl SecretGenerator) -> Result<ChallengeId, RandomError> {
     ChallengeId::try_new(random_hex(generator, OPAQUE_ID_BYTES)?).map_err(RandomError::from)
+}
+
+/// Generates a new user email row identifier.
+///
+/// # Errors
+///
+/// Returns [`RandomError`] if randomness fails or the generated identifier
+/// fails validation.
+pub fn new_user_email_id(generator: &impl SecretGenerator) -> Result<UserEmailId, RandomError> {
+    UserEmailId::try_new(random_hex(generator, OPAQUE_ID_BYTES)?).map_err(RandomError::from)
+}
+
+/// Generates a new auth event row identifier.
+///
+/// # Errors
+///
+/// Returns [`RandomError`] if randomness fails or the generated identifier
+/// fails validation.
+pub fn new_auth_event_id(generator: &impl SecretGenerator) -> Result<AuthEventId, RandomError> {
+    AuthEventId::try_new(random_hex(generator, OPAQUE_ID_BYTES)?).map_err(RandomError::from)
 }
 
 /// Generates a session token with 256 bits of entropy.
