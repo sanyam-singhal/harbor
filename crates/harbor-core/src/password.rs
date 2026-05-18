@@ -460,6 +460,14 @@ mod tests {
                 .validate("correct horse battery staple", &blocklist)
                 .is_ok()
         );
+        assert_eq!(PasswordPolicy::try_new(0, 32), Err(PasswordError::TooShort));
+        assert_eq!(PasswordPolicy::try_new(15, 14), Err(PasswordError::TooLong));
+        assert_eq!(PasswordError::TooShort.to_string(), "password is too short");
+        assert_eq!(PasswordError::TooLong.to_string(), "password is too long");
+        assert_eq!(
+            PasswordError::Blocklisted.to_string(),
+            "password is blocklisted"
+        );
     }
 
     #[test]
@@ -532,6 +540,22 @@ mod tests {
         assert_eq!(
             error.to_string(),
             "random generation failed: system random source failed"
+        );
+        assert_eq!(
+            super::PasswordHashError::from(PasswordError::TooShort).to_string(),
+            "password is too short"
+        );
+        assert_eq!(
+            super::PasswordHashError::InvalidParameters.to_string(),
+            "invalid Argon2 parameters"
+        );
+        assert_eq!(
+            super::PasswordHashError::HashFailed.to_string(),
+            "password hashing failed"
+        );
+        assert_eq!(
+            super::PasswordHashError::InvalidStoredHash.to_string(),
+            "stored password hash is invalid"
         );
     }
 }

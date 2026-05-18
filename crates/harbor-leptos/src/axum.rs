@@ -165,10 +165,18 @@ mod tests {
         HeaderValue,
         header::{LOCATION, REFERRER_POLICY, SET_COOKIE},
     };
-    use harbor_core::{AuthError, AuthErrorCode};
+    use harbor_core::{
+        Argon2Params, Argon2PasswordHasher, AuthError, AuthErrorCode, AuthService, HmacSecretKey,
+        PasswordPolicy, SystemClock, SystemSecretGenerator,
+    };
+    use harbor_email::RecordingMailer;
+    use harbor_sqlx::{SqliteAuthStore, SqliteStoreOptions};
 
-    use super::{auth_error_response, parse_query, see_other};
-    use crate::LinkRouteResponse;
+    use super::{
+        HarborAxumState, auth_error_response, auth_link_router, parse_query, reset_password,
+        route_response, see_other,
+    };
+    use crate::{CookieDefaults, Harbor, LinkRouteResponse};
 
     #[test]
     fn redirect_response_sets_location_cookie_and_referrer_policy() {
@@ -227,5 +235,58 @@ mod tests {
             "https://example.com".to_owned(),
         )]));
         assert!(escaped.redirect.is_none());
+    }
+
+    #[tokio::test]
+    async fn state_router_and_route_response_are_wired() -> Result<(), Box<dyn std::error::Error>> {
+        let store = SqliteAuthStore::connect_and_migrate(
+            "sqlite::memory:",
+            SqliteStoreOptions::in_memory(),
+        )
+        .await?;
+        let service = AuthService::new(
+            store,
+            SystemClock,
+            SystemSecretGenerator,
+            HmacSecretKey::try_new(vec![7; 32])?,
+            Argon2PasswordHasher::new(
+                PasswordPolicy::try_new(8, 128)?,
+                Argon2Params::try_new(32, 1, 1)?,
+            ),
+        );
+        let harbor = Harbor::builder()
+            .with_store(())
+            .with_mailer(RecordingMailer::new())
+            .with_public_base_url("http://localhost:3000")?
+            .with_cookie_defaults(CookieDefaults::development())?
+            .with_hmac_secret_key(vec![7; 32])?
+            .finish()?;
+        let state = HarborAxumState::new(service, harbor.config().clone());
+
+        assert_eq!(
+            state.config().public_base_url().as_str(),
+            "http://localhost:3000"
+        );
+        let _service = state.service();
+        let _router = auth_link_router(state.clone());
+        let ok = route_response(Ok(LinkRouteResponse {
+            location: "/account".to_owned(),
+            set_cookie: None,
+        }));
+        let error = route_response(Err(AuthError::new(AuthErrorCode::Csrf)));
+        let reset = reset_password(
+            ::axum::extract::State(state),
+            ::axum::extract::Query(std::collections::HashMap::from([
+                ("challenge".to_owned(), "challenge00000001".to_owned()),
+                ("token".to_owned(), "secret-token".to_owned()),
+                ("redirect".to_owned(), "/account".to_owned()),
+            ])),
+        )
+        .await;
+
+        assert_eq!(ok.status(), 303);
+        assert_eq!(error.status(), 400);
+        assert_eq!(reset.status(), 303);
+        Ok(())
     }
 }

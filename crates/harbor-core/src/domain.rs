@@ -552,7 +552,7 @@ impl<'a> From<&'a EmailAddress> for Cow<'a, str> {
 mod tests {
     use super::{
         CanonicalEmail, ChallengeId, DomainError, EmailAddress, RedirectPath, RetryBudget,
-        SecretToken, SessionId, TokenHash, UnixTimestampMicros, UserId,
+        SecretToken, SessionId, TokenHash, UnixTimestampMicros, UserEmailId, UserId,
     };
 
     #[test]
@@ -580,6 +580,47 @@ mod tests {
     }
 
     #[test]
+    fn domain_errors_display_stable_messages() {
+        assert_eq!(DomainError::Empty.to_string(), "value is empty");
+        assert_eq!(DomainError::TooLong.to_string(), "value is too long");
+        assert_eq!(
+            DomainError::InvalidCharacters.to_string(),
+            "value contains invalid characters"
+        );
+        assert_eq!(
+            DomainError::InvalidFormat.to_string(),
+            "value has an invalid format"
+        );
+        assert_eq!(
+            DomainError::OutOfRange.to_string(),
+            "value is outside the permitted range"
+        );
+    }
+
+    #[test]
+    fn opaque_ids_display_and_convert_without_changing_value()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let user = UserId::try_new("user000000000001")?;
+        let session = SessionId::try_new("session000000001")?;
+        let challenge = ChallengeId::try_new("challenge00000001")?;
+        let email = UserEmailId::try_new("email00000000001")?;
+        let event = super::AuthEventId::try_new("event00000000001")?;
+
+        assert_eq!(user.to_string(), "user000000000001");
+        assert_eq!(
+            CanonicalEmail::try_new("user@example.com")?.to_string(),
+            "user@example.com"
+        );
+        assert_eq!(RedirectPath::try_new("/account")?.to_string(), "/account");
+        assert_eq!(String::from(user), "user000000000001");
+        assert_eq!(String::from(session), "session000000001");
+        assert_eq!(String::from(challenge), "challenge00000001");
+        assert_eq!(String::from(email), "email00000000001");
+        assert_eq!(String::from(event), "event00000000001");
+        Ok(())
+    }
+
+    #[test]
     fn email_parse_preserves_original_and_builds_canonical_lookup() -> Result<(), DomainError> {
         let email = EmailAddress::parse("User.Name+Tag@Example.COM")?;
 
@@ -590,12 +631,51 @@ mod tests {
 
     #[test]
     fn email_parse_rejects_ambiguous_or_unbounded_values() {
-        assert!(EmailAddress::parse("").is_err());
-        assert!(EmailAddress::parse(" user@example.com").is_err());
-        assert!(EmailAddress::parse("user@@example.com").is_err());
-        assert!(EmailAddress::parse("user@example").is_err());
-        assert!(EmailAddress::parse(".user@example.com").is_err());
-        assert!(EmailAddress::parse("user@example..com").is_err());
+        assert_eq!(EmailAddress::parse("").err(), Some(DomainError::Empty));
+        assert_eq!(
+            EmailAddress::parse(" user@example.com").err(),
+            Some(DomainError::InvalidCharacters)
+        );
+        assert_eq!(
+            EmailAddress::parse("user@@example.com").err(),
+            Some(DomainError::InvalidFormat)
+        );
+        assert_eq!(
+            EmailAddress::parse("user@example").err(),
+            Some(DomainError::InvalidFormat)
+        );
+        assert_eq!(
+            EmailAddress::parse(".user@example.com").err(),
+            Some(DomainError::InvalidFormat)
+        );
+        assert_eq!(
+            EmailAddress::parse("user@example..com").err(),
+            Some(DomainError::InvalidFormat)
+        );
+        assert_eq!(
+            EmailAddress::parse(format!("{}@example.com", "a".repeat(65))).err(),
+            Some(DomainError::TooLong)
+        );
+        assert_eq!(
+            EmailAddress::parse(format!("user@{}.com", "a".repeat(254))).err(),
+            Some(DomainError::TooLong)
+        );
+        assert_eq!(
+            EmailAddress::parse(format!("{}@example.com", "a".repeat(244))).err(),
+            Some(DomainError::TooLong)
+        );
+        assert_eq!(
+            EmailAddress::parse("user@.example.com").err(),
+            Some(DomainError::InvalidFormat)
+        );
+        assert_eq!(
+            EmailAddress::parse("user@example-.com").err(),
+            Some(DomainError::InvalidFormat)
+        );
+        assert_eq!(
+            EmailAddress::parse("user@example!.com").err(),
+            Some(DomainError::InvalidCharacters)
+        );
     }
 
     #[test]
@@ -628,6 +708,7 @@ mod tests {
                 .map(UnixTimestampMicros::as_i64),
             Some(5)
         );
+        assert_eq!(UnixTimestampMicros::EPOCH.checked_add_micros(-1), None);
         assert!(RetryBudget::try_new(1).is_ok());
         assert!(RetryBudget::try_new(0).is_err());
         assert!(RetryBudget::try_new(RetryBudget::MAX + 1).is_err());

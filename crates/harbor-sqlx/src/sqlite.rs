@@ -962,9 +962,9 @@ mod tests {
         GetUserInput, HmacSecretKey, IncrementChallengeAttemptsInput, IncrementRateLimitInput,
         InsertPasswordInput, MarkEmailVerifiedInput, PasswordCredentialStore, PasswordHashString,
         PasswordPolicy, RateLimitStore, RedirectPath, RetryBudget, RevokeSessionInput,
-        RevokeUserSessionsInput, SecretToken, SessionId, SessionStore, StoreErrorCode, TokenHash,
-        UnixTimestampMicros, UpdateSessionLastSeenInput, UserEmailId, UserEmailStore, UserId,
-        UserStore,
+        RevokeUserSessionsInput, SecretHashPurpose, SecretToken, SessionId, SessionStore,
+        StoreErrorCode, TokenHash, UnixTimestampMicros, UpdateSessionLastSeenInput, UserEmailId,
+        UserEmailStore, UserId, UserStore, hash_secret_token,
     };
     use harbor_test_support::{DeterministicSecretGenerator, FixedClock};
     use sqlx::Row;
@@ -1608,6 +1608,207 @@ mod tests {
             Err(error) => error,
         };
         assert_eq!(reused.code(), AuthErrorCode::InvalidCredentials);
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn service_negative_paths_are_enumeration_safe() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let store = migrated_store().await?;
+        let hmac_key = HmacSecretKey::try_new(vec![9; 32])?;
+        let service = AuthService::new(
+            store.clone(),
+            FixedClock::new(now()),
+            DeterministicSecretGenerator::new(),
+            hmac_key.clone(),
+            Argon2PasswordHasher::new(
+                PasswordPolicy::try_new(8, 128)?,
+                Argon2Params::try_new(32, 1, 1)?,
+            ),
+        );
+
+        let invalid_signup = service
+            .sign_up_with_password(harbor_core::PasswordSignUpInput {
+                email: "not-an-email".to_owned(),
+                password: "correct horse battery staple".to_owned(),
+            })
+            .await;
+        let invalid_signup = match invalid_signup {
+            Ok(_) => return Err("invalid signup email should fail".into()),
+            Err(error) => error,
+        };
+        assert_eq!(invalid_signup.code(), AuthErrorCode::InvalidCredentials);
+
+        let short_password = service
+            .sign_up_with_password(harbor_core::PasswordSignUpInput {
+                email: "short@example.com".to_owned(),
+                password: "short".to_owned(),
+            })
+            .await;
+        let short_password = match short_password {
+            Ok(_) => return Err("short signup password should fail".into()),
+            Err(error) => error,
+        };
+        assert_eq!(short_password.code(), AuthErrorCode::InvalidCredentials);
+
+        let unknown_signin = service
+            .sign_in_with_password(harbor_core::PasswordSignInInput {
+                email: "missing@example.com".to_owned(),
+                password: "correct horse battery staple".to_owned(),
+                redirect_path: None,
+            })
+            .await;
+        let unknown_signin = match unknown_signin {
+            Ok(_) => return Err("unknown signin should fail".into()),
+            Err(error) => error,
+        };
+        assert_eq!(unknown_signin.code(), AuthErrorCode::InvalidCredentials);
+
+        let missing_session = SecretToken::try_new("missing-session-token")?;
+        assert_eq!(service.current_session(&missing_session).await?, None);
+        assert!(!service.sign_out(&missing_session).await?);
+
+        let bad_challenge_email = service
+            .create_email_challenge(harbor_core::EmailChallengeInput {
+                purpose: ChallengePurpose::EmailSignIn,
+                delivery: ChallengeDelivery::MagicLink,
+                email: "not-an-email".to_owned(),
+                user_id: None,
+                redirect_path: None,
+            })
+            .await;
+        let bad_challenge_email = match bad_challenge_email {
+            Ok(_) => return Err("invalid challenge email should fail".into()),
+            Err(error) => error,
+        };
+        assert_eq!(
+            bad_challenge_email.code(),
+            AuthErrorCode::InvalidCredentials
+        );
+
+        let unverified = service
+            .sign_up_with_password(harbor_core::PasswordSignUpInput {
+                email: "unverified-reset@example.com".to_owned(),
+                password: "correct horse battery staple".to_owned(),
+            })
+            .await?;
+        let unverified_reset = service
+            .request_password_reset(harbor_core::RequestPasswordResetInput {
+                email: unverified.email.email_original,
+                delivery: ChallengeDelivery::MagicLink,
+                redirect_path: None,
+            })
+            .await?;
+        assert_eq!(unverified_reset.challenge, None);
+
+        let expiring = service
+            .create_email_challenge(harbor_core::EmailChallengeInput {
+                purpose: ChallengePurpose::EmailSignIn,
+                delivery: ChallengeDelivery::MagicLink,
+                email: "expired@example.com".to_owned(),
+                user_id: None,
+                redirect_path: None,
+            })
+            .await?;
+        let late_service = AuthService::new(
+            store.clone(),
+            FixedClock::new(UnixTimestampMicros::try_new(11 * 60 * 1_000_000)?),
+            DeterministicSecretGenerator::new(),
+            hmac_key.clone(),
+            Argon2PasswordHasher::new(
+                PasswordPolicy::try_new(8, 128)?,
+                Argon2Params::try_new(32, 1, 1)?,
+            ),
+        );
+        let expired = late_service
+            .verify_email_challenge(harbor_core::VerifyChallengeInput {
+                challenge_id: expiring.challenge.id,
+                purpose: ChallengePurpose::EmailSignIn,
+                secret: expiring.secret,
+            })
+            .await;
+        let expired = match expired {
+            Ok(_) => return Err("expired challenge should fail".into()),
+            Err(error) => error,
+        };
+        assert_eq!(expired.code(), AuthErrorCode::InvalidCredentials);
+
+        let secret = SecretToken::try_new("correct-secret")?;
+        let rate_limited_id = ChallengeId::try_new("challenge00000099")?;
+        store
+            .create_challenge(CreateChallengeInput {
+                id: rate_limited_id.clone(),
+                purpose: ChallengePurpose::EmailSignIn,
+                user_id: None,
+                email_canonical: EmailAddress::parse("limited@example.com")?
+                    .canonical()
+                    .clone(),
+                secret_hash: hash_secret_token(&hmac_key, SecretHashPurpose::UrlToken, &secret)?,
+                delivery: ChallengeDelivery::MagicLink,
+                redirect_path: None,
+                expires_at: UnixTimestampMicros::try_new(60_000_000)?,
+                max_attempts: RetryBudget::ONE,
+                resend_after: now(),
+                now: now(),
+            })
+            .await?;
+        let wrong_secret = SecretToken::try_new("wrong-secret")?;
+        let first_wrong = service
+            .verify_email_challenge(harbor_core::VerifyChallengeInput {
+                challenge_id: rate_limited_id.clone(),
+                purpose: ChallengePurpose::EmailSignIn,
+                secret: wrong_secret.clone(),
+            })
+            .await;
+        assert!(first_wrong.is_err());
+        let rate_limited = service
+            .verify_email_challenge(harbor_core::VerifyChallengeInput {
+                challenge_id: rate_limited_id,
+                purpose: ChallengePurpose::EmailSignIn,
+                secret: wrong_secret,
+            })
+            .await;
+        let rate_limited = match rate_limited {
+            Ok(_) => return Err("exhausted challenge should rate limit".into()),
+            Err(error) => error,
+        };
+        assert_eq!(rate_limited.code(), AuthErrorCode::RateLimited);
+
+        let reset_secret = SecretToken::try_new("reset-secret")?;
+        let reset_id = ChallengeId::try_new("challenge00000100")?;
+        store
+            .create_challenge(CreateChallengeInput {
+                id: reset_id.clone(),
+                purpose: ChallengePurpose::PasswordReset,
+                user_id: None,
+                email_canonical: EmailAddress::parse("resetless@example.com")?
+                    .canonical()
+                    .clone(),
+                secret_hash: hash_secret_token(
+                    &hmac_key,
+                    SecretHashPurpose::UrlToken,
+                    &reset_secret,
+                )?,
+                delivery: ChallengeDelivery::MagicLink,
+                redirect_path: None,
+                expires_at: UnixTimestampMicros::try_new(60_000_000)?,
+                max_attempts: RetryBudget::try_new(5)?,
+                resend_after: now(),
+                now: now(),
+            })
+            .await?;
+        let no_user_reset = service
+            .reset_password(harbor_core::ResetPasswordInput {
+                challenge_id: reset_id,
+                secret: reset_secret,
+                new_password: "new correct horse battery staple".to_owned(),
+            })
+            .await;
+        let no_user_reset = match no_user_reset {
+            Ok(_) => return Err("password reset without user id should fail".into()),
+            Err(error) => error,
+        };
+        assert_eq!(no_user_reset.code(), AuthErrorCode::InvalidCredentials);
         Ok(())
     }
 

@@ -228,11 +228,11 @@ fn pow10(digits: usize) -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use super::{
-        Clock, RandomError, SecretGenerator, SystemClock, new_challenge_id, new_session_id,
-        new_user_id, random_otp_code, random_otp_code_with_digits, random_session_token,
-        random_url_token,
+        Clock, RandomError, SecretGenerator, SystemClock, new_auth_event_id, new_challenge_id,
+        new_session_id, new_user_email_id, new_user_id, random_otp_code,
+        random_otp_code_with_digits, random_session_token, random_url_token,
     };
-    use crate::UnixTimestampMicros;
+    use crate::{DomainError, UnixTimestampMicros};
 
     #[derive(Clone)]
     struct FixedGenerator {
@@ -267,6 +267,14 @@ mod tests {
             new_challenge_id(&generator)?.as_str(),
             "abababababababababababababababab"
         );
+        assert_eq!(
+            new_user_email_id(&generator).map(|id| id.as_str().to_owned()),
+            Ok("abababababababababababababababab".to_owned())
+        );
+        assert_eq!(
+            new_auth_event_id(&generator).map(|id| id.as_str().to_owned()),
+            Ok("abababababababababababababababab".to_owned())
+        );
         Ok(())
     }
 
@@ -291,5 +299,21 @@ mod tests {
         assert!(random_otp_code_with_digits(&generator, 5).is_err());
         assert!(random_otp_code_with_digits(&generator, 13).is_err());
         Ok(())
+    }
+
+    #[test]
+    fn random_error_display_and_conversion_are_stable() {
+        assert_eq!(
+            RandomError::SystemRandom.to_string(),
+            "system random source failed"
+        );
+        assert_eq!(
+            RandomError::from(DomainError::Empty).to_string(),
+            "generated value failed validation: value is empty"
+        );
+        assert_eq!(
+            RandomError::InvalidOtpDigits.to_string(),
+            "invalid OTP digit count"
+        );
     }
 }
