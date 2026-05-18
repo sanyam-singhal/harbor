@@ -8,11 +8,12 @@ use std::{
 };
 
 use harbor_core::{
-    Argon2Params, Argon2PasswordHasher, AuthService, ChallengeDelivery, ChallengeId, Clock,
-    HmacSecretKey, PasswordPolicy, PasswordSignInInput, PasswordSignUpInput, RedirectPath,
-    SecretToken, SystemClock, SystemSecretGenerator,
+    Argon2Params, Argon2PasswordHasher, AuthService, ChallengeDelivery, ChallengeId,
+    ChallengePurpose, Clock, EmailChallengeInput, EmailChallengeSignInInput, HmacSecretKey,
+    PasswordPolicy, PasswordSignInInput, PasswordSignUpInput, RedirectPath,
+    RequestPasswordResetInput, ResetPasswordInput, SecretToken, SystemClock, SystemSecretGenerator,
 };
-use harbor_email::RecordingMailer;
+use harbor_email::{AuthMailer, ChallengeEmailInput, EmailRecipient, RecordingMailer};
 use harbor_leptos::{CookieDefaults, CsrfRequest, Harbor, build_csrf_cookie, issue_csrf_token};
 use harbor_sqlx::{SqliteAuthStore, SqliteStoreOptions};
 
@@ -272,10 +273,30 @@ async fn handle_browser_request(
         ("GET", "/healthz") => Ok(html_response(200, Vec::new(), "ok".to_owned())),
         ("GET", "/") | ("GET", "/signup") => signup_page(config),
         ("POST", "/signup") => handle_signup(request, service, mailer, config).await,
-        ("GET", "/confirm") => handle_confirm(request, service, config).await,
-        ("GET", "/signin") => signin_page(config, None),
+        ("GET", "/auth/confirm-email") => handle_confirm(request, service).await,
+        ("GET", "/signin") => signin_page(config, signin_message(&request)),
         ("POST", "/signin") => handle_signin(request, service, config).await,
+        ("GET", "/signin/email-link") => email_link_page(config),
+        ("POST", "/signin/email-link") => {
+            handle_email_link_request(request, service, mailer, config).await
+        }
+        ("GET", "/auth/email-link") => handle_email_link(request, service, config).await,
+        ("GET", "/signin/email-code") => email_code_request_page(config),
+        ("POST", "/signin/email-code/request") => {
+            handle_email_code_request(request, service, mailer, config).await
+        }
+        ("POST", "/signin/email-code/verify") => {
+            handle_email_code_verify(request, service, config).await
+        }
+        ("GET", "/forgot-password") => forgot_password_page(config),
+        ("POST", "/forgot-password") => {
+            handle_forgot_password(request, service, mailer, config).await
+        }
+        ("GET", "/auth/reset-password") => handle_reset_password_link(request),
+        ("GET", "/reset-password") => reset_password_page(request, config),
+        ("POST", "/reset-password") => handle_reset_password(request, service, config).await,
         ("GET", "/account") => account_page(request, service, config).await,
+        ("POST", "/signout") => handle_signout(request, service, config).await,
         _ => Ok(error_response(404, "Not found")),
     }
 }
@@ -324,11 +345,7 @@ async fn handle_signup(
     )
     .await?;
     let link_query = latest_link_query(mailer)?;
-    let confirmation_href = format!(
-        "/confirm?challenge={}&token={}",
-        url_component(&link_query.challenge),
-        url_component(&link_query.token)
-    );
+    let confirmation_href = auth_link_href("/auth/confirm-email", &link_query);
     Ok(html_response(
         200,
         Vec::new(),
@@ -347,11 +364,10 @@ async fn handle_signup(
 async fn handle_confirm(
     request: DemoHttpRequest,
     service: &DemoAuthService,
-    config: &harbor_leptos::HarborConfig,
 ) -> Result<DemoHttpResponse, Box<dyn std::error::Error>> {
     let challenge = required_query_value(&request, "challenge")?.to_owned();
     let token = required_query_value(&request, "token")?.to_owned();
-    harbor_leptos::handle_confirm_email_link(
+    let response = harbor_leptos::handle_confirm_email_link(
         service,
         harbor_leptos::AuthLinkQuery {
             challenge,
@@ -360,7 +376,11 @@ async fn handle_confirm(
         },
     )
     .await?;
-    signin_page(config, Some("Email verified. Sign in to continue."))
+    Ok(redirect_response(
+        303,
+        &with_query(&response.location, "verified", "1"),
+        None,
+    ))
 }
 
 fn signin_page(
@@ -369,9 +389,11 @@ fn signin_page(
 ) -> Result<DemoHttpResponse, Box<dyn std::error::Error>> {
     let csrf = issue_csrf_token(&SystemSecretGenerator)?;
     let csrf_cookie = build_csrf_cookie(config.cookie_defaults(), &csrf, None)?;
-    let message_html = message.map_or_else(String::new, |value| {
-        format!("<p data-testid=\"status\">{}</p>", html_escape(value))
-    });
+    let message_html = message
+        .map(normalize_signin_message)
+        .map_or_else(String::new, |value| {
+            format!("<p data-testid=\"status\">{}</p>", html_escape(value))
+        });
     let body = format!(
         concat!(
             "<!doctype html><html><body>",
@@ -426,6 +448,302 @@ async fn handle_signin(
     ))
 }
 
+fn email_link_page(
+    config: &harbor_leptos::HarborConfig,
+) -> Result<DemoHttpResponse, Box<dyn std::error::Error>> {
+    auth_email_request_page(
+        config,
+        "Email link signin",
+        "/signin/email-link",
+        "Send magic link",
+    )
+}
+
+async fn handle_email_link_request(
+    request: DemoHttpRequest,
+    service: &DemoAuthService,
+    mailer: &RecordingMailer,
+    config: &harbor_leptos::HarborConfig,
+) -> Result<DemoHttpResponse, Box<dyn std::error::Error>> {
+    let form = parse_form(&request.body)?;
+    let email = required_form_value(&form, "email")?.to_owned();
+    let csrf = csrf_request_from_form(&request, &form);
+    harbor_leptos::request_email_signin(
+        service,
+        mailer,
+        config,
+        csrf,
+        email,
+        Some(RedirectPath::try_new("/account")?),
+    )
+    .await?;
+    let link_query = latest_link_query(mailer)?;
+    let href = auth_link_href("/auth/email-link", &link_query);
+    Ok(html_response(
+        200,
+        Vec::new(),
+        format!(
+            concat!(
+                "<!doctype html><html><body>",
+                "<main><h1>Check your email</h1>",
+                "<a data-testid=\"email-link\" href=\"{}\">Sign in by email</a>",
+                "</main></body></html>"
+            ),
+            html_escape(&href)
+        ),
+    ))
+}
+
+async fn handle_email_link(
+    request: DemoHttpRequest,
+    service: &DemoAuthService,
+    config: &harbor_leptos::HarborConfig,
+) -> Result<DemoHttpResponse, Box<dyn std::error::Error>> {
+    let challenge = required_query_value(&request, "challenge")?.to_owned();
+    let token = required_query_value(&request, "token")?.to_owned();
+    let response = harbor_leptos::handle_email_link_signin(
+        service,
+        config,
+        harbor_leptos::AuthLinkQuery {
+            challenge,
+            token,
+            redirect: Some(RedirectPath::try_new("/account")?),
+        },
+    )
+    .await?;
+    Ok(redirect_response(
+        303,
+        &response.location,
+        response.set_cookie,
+    ))
+}
+
+fn email_code_request_page(
+    config: &harbor_leptos::HarborConfig,
+) -> Result<DemoHttpResponse, Box<dyn std::error::Error>> {
+    auth_email_request_page(
+        config,
+        "Email code signin",
+        "/signin/email-code/request",
+        "Send code",
+    )
+}
+
+async fn handle_email_code_request(
+    request: DemoHttpRequest,
+    service: &DemoAuthService,
+    mailer: &RecordingMailer,
+    config: &harbor_leptos::HarborConfig,
+) -> Result<DemoHttpResponse, Box<dyn std::error::Error>> {
+    let form = parse_form(&request.body)?;
+    let email = required_form_value(&form, "email")?.to_owned();
+    let csrf = csrf_request_from_form(&request, &form);
+    harbor_leptos::validate_csrf_from_headers(
+        config,
+        csrf.cookie_header.as_deref(),
+        csrf.csrf_header.as_deref(),
+    )?;
+    let challenge = service
+        .create_email_challenge(EmailChallengeInput {
+            purpose: ChallengePurpose::EmailSignIn,
+            delivery: ChallengeDelivery::OtpCode,
+            email,
+            user_id: None,
+            redirect_path: Some(RedirectPath::try_new("/account")?),
+        })
+        .await?;
+    let email = harbor_email::render_challenge_email(ChallengeEmailInput {
+        purpose: ChallengePurpose::EmailSignIn,
+        delivery: ChallengeDelivery::OtpCode,
+        to: EmailRecipient::parse(challenge.challenge.email_canonical.as_str())?,
+        challenge_id: challenge.challenge.id.clone(),
+        action_url: None,
+        otp_code: Some(challenge.secret),
+    })?;
+    mailer.send_auth_email(email).await?;
+    let code = latest_otp_code(mailer)?;
+    email_code_verify_page(config, challenge.challenge.id.as_str(), &code)
+}
+
+fn email_code_verify_page(
+    config: &harbor_leptos::HarborConfig,
+    challenge_id: &str,
+    code: &str,
+) -> Result<DemoHttpResponse, Box<dyn std::error::Error>> {
+    let csrf = issue_csrf_token(&SystemSecretGenerator)?;
+    let csrf_cookie = build_csrf_cookie(config.cookie_defaults(), &csrf, None)?;
+    let body = format!(
+        concat!(
+            "<!doctype html><html><body>",
+            "<main><h1>Enter code</h1>",
+            "<p data-testid=\"recorded-code\">{}</p>",
+            "<form method=\"post\" action=\"/signin/email-code/verify\">",
+            "<input type=\"hidden\" name=\"csrf\" value=\"{}\">",
+            "<input type=\"hidden\" name=\"challenge\" value=\"{}\">",
+            "<label>Code <input name=\"code\" inputmode=\"numeric\" required></label>",
+            "<button type=\"submit\">Verify code</button>",
+            "</form></main></body></html>"
+        ),
+        html_escape(code),
+        html_escape(csrf.expose_secret()),
+        html_escape(challenge_id)
+    );
+    Ok(html_response(
+        200,
+        vec![("Set-Cookie".to_owned(), csrf_cookie)],
+        body,
+    ))
+}
+
+async fn handle_email_code_verify(
+    request: DemoHttpRequest,
+    service: &DemoAuthService,
+    config: &harbor_leptos::HarborConfig,
+) -> Result<DemoHttpResponse, Box<dyn std::error::Error>> {
+    let form = parse_form(&request.body)?;
+    let csrf = csrf_request_from_form(&request, &form);
+    let signin = harbor_leptos::verify_email_code(
+        service,
+        config,
+        csrf,
+        EmailChallengeSignInInput {
+            challenge_id: ChallengeId::try_new(required_form_value(&form, "challenge")?)?,
+            secret: SecretToken::try_new(required_form_value(&form, "code")?)?,
+            redirect_path: Some(RedirectPath::try_new("/account")?),
+        },
+    )
+    .await?;
+    Ok(html_response(
+        200,
+        vec![("Set-Cookie".to_owned(), signin.set_cookie)],
+        concat!(
+            "<!doctype html><html><body>",
+            "<main><h1>Signed in</h1>",
+            "<a data-testid=\"account-link\" href=\"/account\">Account</a>",
+            "</main></body></html>"
+        )
+        .to_owned(),
+    ))
+}
+
+fn forgot_password_page(
+    config: &harbor_leptos::HarborConfig,
+) -> Result<DemoHttpResponse, Box<dyn std::error::Error>> {
+    auth_email_request_page(
+        config,
+        "Forgot password",
+        "/forgot-password",
+        "Send reset link",
+    )
+}
+
+async fn handle_forgot_password(
+    request: DemoHttpRequest,
+    service: &DemoAuthService,
+    mailer: &RecordingMailer,
+    config: &harbor_leptos::HarborConfig,
+) -> Result<DemoHttpResponse, Box<dyn std::error::Error>> {
+    let form = parse_form(&request.body)?;
+    let email = required_form_value(&form, "email")?.to_owned();
+    let csrf = csrf_request_from_form(&request, &form);
+    harbor_leptos::request_password_reset(
+        service,
+        mailer,
+        config,
+        csrf,
+        RequestPasswordResetInput {
+            email,
+            delivery: ChallengeDelivery::MagicLink,
+            redirect_path: Some(RedirectPath::try_new("/signin")?),
+        },
+    )
+    .await?;
+    let link_query = latest_link_query(mailer)?;
+    let href = auth_link_href("/auth/reset-password", &link_query);
+    Ok(html_response(
+        200,
+        Vec::new(),
+        format!(
+            concat!(
+                "<!doctype html><html><body>",
+                "<main><h1>Check your email</h1>",
+                "<a data-testid=\"reset-link\" href=\"{}\">Reset password</a>",
+                "</main></body></html>"
+            ),
+            html_escape(&href)
+        ),
+    ))
+}
+
+fn handle_reset_password_link(
+    request: DemoHttpRequest,
+) -> Result<DemoHttpResponse, Box<dyn std::error::Error>> {
+    let response = harbor_leptos::handle_reset_password_link(auth_query_from_request(&request)?)?;
+    Ok(redirect_response(303, &response.location, None))
+}
+
+fn reset_password_page(
+    request: DemoHttpRequest,
+    config: &harbor_leptos::HarborConfig,
+) -> Result<DemoHttpResponse, Box<dyn std::error::Error>> {
+    let csrf = issue_csrf_token(&SystemSecretGenerator)?;
+    let csrf_cookie = build_csrf_cookie(config.cookie_defaults(), &csrf, None)?;
+    let challenge = required_query_value(&request, "challenge")?;
+    let token = required_query_value(&request, "token")?;
+    let body = format!(
+        concat!(
+            "<!doctype html><html><body>",
+            "<main><h1>Reset password</h1>",
+            "<form method=\"post\" action=\"/reset-password\">",
+            "<input type=\"hidden\" name=\"csrf\" value=\"{}\">",
+            "<input type=\"hidden\" name=\"challenge\" value=\"{}\">",
+            "<input type=\"hidden\" name=\"token\" value=\"{}\">",
+            "<label>New password <input name=\"password\" type=\"password\" required></label>",
+            "<button type=\"submit\">Reset password</button>",
+            "</form></main></body></html>"
+        ),
+        html_escape(csrf.expose_secret()),
+        html_escape(challenge),
+        html_escape(token)
+    );
+    Ok(html_response(
+        200,
+        vec![("Set-Cookie".to_owned(), csrf_cookie)],
+        body,
+    ))
+}
+
+async fn handle_reset_password(
+    request: DemoHttpRequest,
+    service: &DemoAuthService,
+    config: &harbor_leptos::HarborConfig,
+) -> Result<DemoHttpResponse, Box<dyn std::error::Error>> {
+    let form = parse_form(&request.body)?;
+    let csrf = csrf_request_from_form(&request, &form);
+    harbor_leptos::reset_password(
+        service,
+        config,
+        csrf,
+        ResetPasswordInput {
+            challenge_id: ChallengeId::try_new(required_form_value(&form, "challenge")?)?,
+            secret: SecretToken::try_new(required_form_value(&form, "token")?)?,
+            new_password: required_form_value(&form, "password")?.to_owned(),
+        },
+    )
+    .await?;
+    Ok(html_response(
+        200,
+        Vec::new(),
+        concat!(
+            "<!doctype html><html><body>",
+            "<main><h1>Password reset</h1>",
+            "<a data-testid=\"signin-link\" href=\"/signin\">Sign in</a>",
+            "</main></body></html>"
+        )
+        .to_owned(),
+    ))
+}
+
 async fn account_page(
     request: DemoHttpRequest,
     service: &DemoAuthService,
@@ -437,19 +755,28 @@ async fn account_page(
         request.headers.get("cookie").map(String::as_str),
     )
     .await?;
-    let (status, body) = if current.is_some() {
+    let (status, headers, body) = if current.is_some() {
+        let csrf = issue_csrf_token(&SystemSecretGenerator)?;
+        let csrf_cookie = build_csrf_cookie(config.cookie_defaults(), &csrf, None)?;
         (
             200,
-            concat!(
-                "<!doctype html><html><body>",
-                "<main><h1 data-testid=\"account-status\">Signed in</h1>",
-                "</main></body></html>"
-            )
-            .to_owned(),
+            vec![("Set-Cookie".to_owned(), csrf_cookie)],
+            format!(
+                concat!(
+                    "<!doctype html><html><body>",
+                    "<main><h1 data-testid=\"account-status\">Signed in</h1>",
+                    "<form method=\"post\" action=\"/signout\">",
+                    "<input type=\"hidden\" name=\"csrf\" value=\"{}\">",
+                    "<button type=\"submit\">Sign out</button>",
+                    "</form></main></body></html>"
+                ),
+                html_escape(csrf.expose_secret())
+            ),
         )
     } else {
         (
             401,
+            Vec::new(),
             concat!(
                 "<!doctype html><html><body>",
                 "<main><h1 data-testid=\"account-status\">Signed out</h1>",
@@ -458,7 +785,27 @@ async fn account_page(
             .to_owned(),
         )
     };
-    Ok(html_response(status, Vec::new(), body))
+    Ok(html_response(status, headers, body))
+}
+
+async fn handle_signout(
+    request: DemoHttpRequest,
+    service: &DemoAuthService,
+    config: &harbor_leptos::HarborConfig,
+) -> Result<DemoHttpResponse, Box<dyn std::error::Error>> {
+    let form = parse_form(&request.body)?;
+    let csrf = csrf_request_from_form(&request, &form);
+    let delete_cookie = harbor_leptos::sign_out(service, config, csrf).await?;
+    Ok(html_response(
+        200,
+        vec![("Set-Cookie".to_owned(), delete_cookie)],
+        concat!(
+            "<!doctype html><html><body>",
+            "<main><h1 data-testid=\"account-status\">Signed out</h1>",
+            "</main></body></html>"
+        )
+        .to_owned(),
+    ))
 }
 
 fn csrf_request_from_form(
@@ -469,6 +816,81 @@ fn csrf_request_from_form(
         cookie_header: request.headers.get("cookie").cloned(),
         csrf_header: form.get("csrf").cloned(),
     }
+}
+
+fn auth_email_request_page(
+    config: &harbor_leptos::HarborConfig,
+    heading: &str,
+    action: &str,
+    button: &str,
+) -> Result<DemoHttpResponse, Box<dyn std::error::Error>> {
+    let csrf = issue_csrf_token(&SystemSecretGenerator)?;
+    let csrf_cookie = build_csrf_cookie(config.cookie_defaults(), &csrf, None)?;
+    let body = format!(
+        concat!(
+            "<!doctype html><html><body>",
+            "<main><h1>{}</h1>",
+            "<form method=\"post\" action=\"{}\">",
+            "<input type=\"hidden\" name=\"csrf\" value=\"{}\">",
+            "<label>Email <input name=\"email\" type=\"email\" required></label>",
+            "<button type=\"submit\">{}</button>",
+            "</form></main></body></html>"
+        ),
+        html_escape(heading),
+        html_escape(action),
+        html_escape(csrf.expose_secret()),
+        html_escape(button)
+    );
+    Ok(html_response(
+        200,
+        vec![("Set-Cookie".to_owned(), csrf_cookie)],
+        body,
+    ))
+}
+
+fn signin_message(request: &DemoHttpRequest) -> Option<&str> {
+    request.query.get("verified").and_then(
+        |value| {
+            if value == "1" { Some("verified") } else { None }
+        },
+    )
+}
+
+fn normalize_signin_message(message: &str) -> &str {
+    match message {
+        "verified" => "Email verified. Sign in to continue.",
+        _ => message,
+    }
+}
+
+fn auth_query_from_request(
+    request: &DemoHttpRequest,
+) -> Result<harbor_leptos::AuthLinkQuery, Box<dyn std::error::Error>> {
+    Ok(harbor_leptos::AuthLinkQuery {
+        challenge: required_query_value(request, "challenge")?.to_owned(),
+        token: required_query_value(request, "token")?.to_owned(),
+        redirect: None,
+    })
+}
+
+fn auth_link_href(path: &str, query: &harbor_leptos::AuthLinkQuery) -> String {
+    format!(
+        "{}?challenge={}&token={}",
+        path,
+        url_component(&query.challenge),
+        url_component(&query.token)
+    )
+}
+
+fn with_query(path: &str, name: &str, value: &str) -> String {
+    let separator = if path.contains('?') { '&' } else { '?' };
+    format!(
+        "{}{}{}={}",
+        path,
+        separator,
+        url_component(name),
+        url_component(value)
+    )
 }
 
 fn required_form_value<'a>(
@@ -661,12 +1083,24 @@ fn error_response(status: u16, message: &str) -> DemoHttpResponse {
     )
 }
 
+fn redirect_response(status: u16, location: &str, set_cookie: Option<String>) -> DemoHttpResponse {
+    let mut headers = vec![
+        ("Location".to_owned(), location.to_owned()),
+        ("Referrer-Policy".to_owned(), "no-referrer".to_owned()),
+    ];
+    if let Some(cookie) = set_cookie {
+        headers.push(("Set-Cookie".to_owned(), cookie));
+    }
+    html_response(status, headers, String::new())
+}
+
 fn write_http_response(
     stream: &mut TcpStream,
     response: DemoHttpResponse,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let reason = match response.status {
         200 => "OK",
+        303 => "See Other",
         400 => "Bad Request",
         401 => "Unauthorized",
         404 => "Not Found",
@@ -743,6 +1177,24 @@ fn latest_link_query(
         None => return Err("auth email should contain a link".into()),
     };
     parse_link_query(link)
+}
+
+fn latest_otp_code(mailer: &RecordingMailer) -> Result<String, Box<dyn std::error::Error>> {
+    let recorded = mailer.recorded()?;
+    let email = match recorded.last() {
+        Some(email) => email,
+        None => return Err("recording mailer should contain an auth email".into()),
+    };
+    let mut lines = email.text_body().lines();
+    while let Some(line) = lines.next() {
+        if line == "Use this code:" {
+            return lines
+                .next()
+                .map(str::to_owned)
+                .ok_or_else(|| "auth email should contain an OTP code".into());
+        }
+    }
+    Err("auth email should contain an OTP code".into())
 }
 
 fn parse_link_query(
