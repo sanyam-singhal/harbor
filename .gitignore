@@ -2,3 +2,6 @@
 .local/
 target/
 harbor-demo.sqlite*
+node_modules/
+playwright-report/
+test-results/

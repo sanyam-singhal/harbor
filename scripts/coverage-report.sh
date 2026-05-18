@@ -20,6 +20,8 @@ Options:
 Environment:
   HARBOR_COVERAGE_FAIL_UNDER_LINES    Minimum line coverage. Default: 75.
   HARBOR_COVERAGE_FAIL_UNDER_REGIONS  Minimum region coverage. Default: 70.
+  HARBOR_COVERAGE_IGNORE_FILENAME_REGEX
+                                     Files omitted from reports. Default: harbor-demo/src/main.rs.
 
 Outputs:
   .local/coverage/summary.md
@@ -40,6 +42,7 @@ feature_args=()
 output_dir=".local/coverage"
 fail_under_lines="${HARBOR_COVERAGE_FAIL_UNDER_LINES:-75}"
 fail_under_regions="${HARBOR_COVERAGE_FAIL_UNDER_REGIONS:-70}"
+ignore_filename_regex="${HARBOR_COVERAGE_IGNORE_FILENAME_REGEX:-harbor-demo/src/main.rs}"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -129,6 +132,9 @@ if [[ "${#packages[@]}" -gt 0 ]]; then
     report_scope_args+=("--package" "$package")
   done
 fi
+if [[ -n "$ignore_filename_regex" ]]; then
+  report_scope_args+=("--ignore-filename-regex" "$ignore_filename_regex")
+fi
 
 mkdir -p "$output_dir/text"
 
@@ -160,6 +166,8 @@ Status: $status
 \`\`\`text
 cargo llvm-cov ${scope_args[*]} ${feature_args[*]}
 \`\`\`
+
+Report filter: ${ignore_filename_regex:-none}
 
 ## Artifacts
 

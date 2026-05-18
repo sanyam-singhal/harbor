@@ -17,9 +17,10 @@ Runs the strict Rust gate:
   6. scripts/coverage-report.sh --workspace --all-features
 
 Then runs smoke gates for non-Rust enclaves when present:
-  7. ts-sdk npm test
-  8. py-sdk uv run pytest
-  9. ui npm test
+  7. root npm test
+  8. ts-sdk npm test
+  9. py-sdk uv run pytest
+  10. ui npm test
 
 Stress tools are intentionally excluded. Run scripts/stress-mutants.sh and,
 for concurrency-critical crates, scripts/stress-loom.sh explicitly at phase
@@ -57,6 +58,12 @@ cargo test --workspace --all-features
 
 echo "==> scripts/coverage-report.sh --workspace --all-features"
 scripts/coverage-report.sh --workspace --all-features
+
+if [[ -f package.json ]]; then
+  echo "==> root npm ci && npm test"
+  npm ci
+  npm test
+fi
 
 if [[ -f ts-sdk/package.json ]]; then
   echo "==> ts-sdk npm ci && npm test"
