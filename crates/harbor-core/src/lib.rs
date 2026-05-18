@@ -8,13 +8,14 @@ pub mod error;
 pub mod password;
 pub mod ports;
 pub mod secret;
+pub mod store;
 
 /// Version of the `harbor-core` crate.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 pub use domain::{
-    CanonicalEmail, ChallengeId, DomainError, EmailAddress, RedirectPath, RetryBudget, SecretToken,
-    SessionId, TokenHash, UnixTimestampMicros, UserId,
+    AuthEventId, CanonicalEmail, ChallengeId, DomainError, EmailAddress, RedirectPath, RetryBudget,
+    SecretToken, SessionId, TokenHash, UnixTimestampMicros, UserEmailId, UserId,
 };
 pub use error::{
     AuthError, AuthErrorCode, ConfigError, ConfigErrorCode, MailError, MailErrorCode, StoreError,
@@ -30,4 +31,14 @@ pub use ports::{
 };
 pub use secret::{
     HmacSecretKey, SecretHashPurpose, constant_time_token_hash_eq, hash_secret, hash_secret_token,
+};
+pub use store::{
+    AppendAuthEventInput, AuthEventKind, AuthEventRecord, AuthEventStore, AuthStore,
+    ChallengeDelivery, ChallengePurpose, ChallengeRecord, ChallengeStore, CreateChallengeInput,
+    CreateSessionInput, CreateUserEmailInput, CreateUserInput, DeleteExpiredSessionsInput,
+    FindEmailByCanonicalInput, GetChallengeInput, GetPasswordCredentialInput, GetSessionInput,
+    GetUserInput, IncrementChallengeAttemptsInput, IncrementRateLimitInput, InsertPasswordInput,
+    MarkEmailVerifiedInput, PasswordCredentialRecord, RateLimitDecision, RateLimitStore,
+    RevokeSessionInput, RevokeUserSessionsInput, SessionRecord, SessionStore,
+    UpdateSessionLastSeenInput, UserEmailRecord, UserEmailStore, UserRecord, UserStore,
 };

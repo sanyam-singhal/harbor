@@ -55,6 +55,14 @@ pub struct SessionId(String);
 #[derive(Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct ChallengeId(String);
 
+/// Stable user email row identifier.
+#[derive(Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct UserEmailId(String);
+
+/// Stable auth event row identifier.
+#[derive(Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct AuthEventId(String);
+
 macro_rules! opaque_id_type {
     ($type_name:ident) => {
         impl $type_name {
@@ -98,6 +106,8 @@ macro_rules! opaque_id_type {
 opaque_id_type!(UserId);
 opaque_id_type!(SessionId);
 opaque_id_type!(ChallengeId);
+opaque_id_type!(UserEmailId);
+opaque_id_type!(AuthEventId);
 
 /// User-supplied email address plus Harbor's canonical lookup form.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -517,6 +527,18 @@ impl From<ChallengeId> for String {
     }
 }
 
+impl From<UserEmailId> for String {
+    fn from(value: UserEmailId) -> Self {
+        value.0
+    }
+}
+
+impl From<AuthEventId> for String {
+    fn from(value: AuthEventId) -> Self {
+        value.0
+    }
+}
+
 impl<'a> From<&'a EmailAddress> for Cow<'a, str> {
     fn from(value: &'a EmailAddress) -> Self {
         Cow::Borrowed(value.original())
@@ -537,6 +559,8 @@ mod tests {
         assert!(UserId::try_new(id).is_ok());
         assert!(SessionId::try_new(id).is_ok());
         assert!(ChallengeId::try_new(id).is_ok());
+        assert!(super::UserEmailId::try_new(id).is_ok());
+        assert!(super::AuthEventId::try_new(id).is_ok());
     }
 
     #[test]
