@@ -234,6 +234,9 @@ impl UnixTimestampMicros {
 pub struct RetryBudget(NonZeroUsize);
 
 impl RetryBudget {
+    /// Retry budget of one attempt.
+    pub const ONE: Self = Self(NonZeroUsize::MIN);
+
     /// Maximum retry budget accepted by default constructors.
     pub const MAX: usize = 10_000;
 
