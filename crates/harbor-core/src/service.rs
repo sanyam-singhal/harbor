@@ -177,44 +177,14 @@ where
             return Err(AuthError::new(AuthErrorCode::InvalidCredentials));
         }
 
-        let session_token = random_session_token(&self.generator)
-            .map_err(|_error| AuthError::with_detail(AuthErrorCode::Internal, "session_token"))?;
-        let token_hash = hash_secret_token(
-            &self.hmac_key,
-            SecretHashPurpose::SessionToken,
-            &session_token,
-        )
-        .map_err(|_error| AuthError::with_detail(AuthErrorCode::Internal, "token_hash"))?;
-        let now = self.clock.now();
-        let session = self
-            .store
-            .create_session(CreateSessionInput {
-                id: new_session_id(&self.generator).map_err(|_error| {
-                    AuthError::with_detail(AuthErrorCode::Internal, "session_id")
-                })?,
-                user_id: email_record.user_id,
-                token_hash,
-                created_at: now,
-                idle_expires_at: now
-                    .checked_add_micros(DEFAULT_IDLE_SESSION_MICROS)
-                    .ok_or_else(|| {
-                        AuthError::with_detail(AuthErrorCode::Internal, "idle_expiry")
-                    })?,
-                absolute_expires_at: now
-                    .checked_add_micros(DEFAULT_ABSOLUTE_SESSION_MICROS)
-                    .ok_or_else(|| {
-                        AuthError::with_detail(AuthErrorCode::Internal, "absolute_expiry")
-                    })?,
-                ip_hash: None,
-                user_agent_hash: None,
-            })
-            .await
-            .map_err(AuthError::from)?;
+        let signin = self
+            .create_session_for_user(email_record.user_id, input.redirect_path)
+            .await?;
 
         Ok(PasswordSignInOutput {
-            session,
-            session_token,
-            redirect_path: input.redirect_path,
+            session: signin.session,
+            session_token: signin.session_token,
+            redirect_path: signin.redirect_path,
         })
     }
 
@@ -399,6 +369,40 @@ where
         })
     }
 
+    /// Signs in by consuming a verified email challenge.
+    ///
+    /// If the email address does not yet belong to a user, Harbor creates a
+    /// verified primary email account before creating the session.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AuthError`] when the challenge is invalid or persistence fails.
+    pub async fn sign_in_with_email_challenge(
+        &self,
+        input: EmailChallengeSignInInput,
+    ) -> Result<EmailChallengeSignInOutput, AuthError> {
+        let verified = self
+            .verify_email_challenge(VerifyChallengeInput {
+                challenge_id: input.challenge_id,
+                purpose: ChallengePurpose::EmailSignIn,
+                secret: input.secret,
+            })
+            .await?;
+        let email_record = self
+            .ensure_verified_email_account(verified.challenge.email_canonical.clone())
+            .await?;
+        let signin = self
+            .create_session_for_user(email_record.user_id.clone(), input.redirect_path)
+            .await?;
+
+        Ok(EmailChallengeSignInOutput {
+            email: email_record,
+            session: signin.session,
+            session_token: signin.session_token,
+            redirect_path: signin.redirect_path,
+        })
+    }
+
     /// Requests a password reset challenge for a verified email address.
     ///
     /// Missing and unverified email addresses produce an empty output so HTTP
@@ -515,6 +519,111 @@ where
             revoked_sessions,
         })
     }
+
+    async fn ensure_verified_email_account(
+        &self,
+        email_canonical: crate::CanonicalEmail,
+    ) -> Result<UserEmailRecord, AuthError> {
+        let now = self.clock.now();
+        if let Some(email_record) = self
+            .store
+            .find_email_by_canonical(FindEmailByCanonicalInput {
+                email_canonical: email_canonical.clone(),
+            })
+            .await
+            .map_err(AuthError::from)?
+        {
+            if email_record.verified_at.is_some() {
+                return Ok(email_record);
+            }
+            return self
+                .store
+                .mark_email_verified(MarkEmailVerifiedInput {
+                    email_canonical,
+                    verified_at: now,
+                })
+                .await
+                .map_err(AuthError::from)?
+                .ok_or_else(|| AuthError::new(AuthErrorCode::InvalidCredentials));
+        }
+
+        let user_id = new_user_id(&self.generator)
+            .map_err(|_error| AuthError::with_detail(AuthErrorCode::Internal, "user_id"))?;
+        let email_id = new_user_email_id(&self.generator)
+            .map_err(|_error| AuthError::with_detail(AuthErrorCode::Internal, "email_id"))?;
+        self.store
+            .create_user(CreateUserInput {
+                id: user_id.clone(),
+                now,
+            })
+            .await
+            .map_err(AuthError::from)?;
+        self.store
+            .create_user_email(CreateUserEmailInput {
+                id: email_id,
+                user_id,
+                email_original: email_canonical.as_str().to_owned(),
+                email_canonical: email_canonical.clone(),
+                is_primary: true,
+                now,
+            })
+            .await
+            .map_err(AuthError::from)?;
+        self.store
+            .mark_email_verified(MarkEmailVerifiedInput {
+                email_canonical,
+                verified_at: now,
+            })
+            .await
+            .map_err(AuthError::from)?
+            .ok_or_else(|| AuthError::new(AuthErrorCode::InvalidCredentials))
+    }
+
+    async fn create_session_for_user(
+        &self,
+        user_id: crate::UserId,
+        redirect_path: Option<RedirectPath>,
+    ) -> Result<PasswordSignInOutput, AuthError> {
+        let session_token = random_session_token(&self.generator)
+            .map_err(|_error| AuthError::with_detail(AuthErrorCode::Internal, "session_token"))?;
+        let token_hash = hash_secret_token(
+            &self.hmac_key,
+            SecretHashPurpose::SessionToken,
+            &session_token,
+        )
+        .map_err(|_error| AuthError::with_detail(AuthErrorCode::Internal, "token_hash"))?;
+        let now = self.clock.now();
+        let session = self
+            .store
+            .create_session(CreateSessionInput {
+                id: new_session_id(&self.generator).map_err(|_error| {
+                    AuthError::with_detail(AuthErrorCode::Internal, "session_id")
+                })?,
+                user_id,
+                token_hash,
+                created_at: now,
+                idle_expires_at: now
+                    .checked_add_micros(DEFAULT_IDLE_SESSION_MICROS)
+                    .ok_or_else(|| {
+                        AuthError::with_detail(AuthErrorCode::Internal, "idle_expiry")
+                    })?,
+                absolute_expires_at: now
+                    .checked_add_micros(DEFAULT_ABSOLUTE_SESSION_MICROS)
+                    .ok_or_else(|| {
+                        AuthError::with_detail(AuthErrorCode::Internal, "absolute_expiry")
+                    })?,
+                ip_hash: None,
+                user_agent_hash: None,
+            })
+            .await
+            .map_err(AuthError::from)?;
+
+        Ok(PasswordSignInOutput {
+            session,
+            session_token,
+            redirect_path,
+        })
+    }
 }
 
 fn challenge_lifetime(purpose: ChallengePurpose) -> i64 {
@@ -619,6 +728,30 @@ pub struct VerifyChallengeInput {
 pub struct VerifiedChallenge {
     /// Consumed challenge.
     pub challenge: ChallengeRecord,
+}
+
+/// Email challenge signin input.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EmailChallengeSignInInput {
+    /// Email signin challenge id.
+    pub challenge_id: crate::ChallengeId,
+    /// Presented challenge secret.
+    pub secret: SecretToken,
+    /// Optional post-signin redirect.
+    pub redirect_path: Option<RedirectPath>,
+}
+
+/// Email challenge signin output.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EmailChallengeSignInOutput {
+    /// Verified email account.
+    pub email: UserEmailRecord,
+    /// Created session.
+    pub session: SessionRecord,
+    /// Raw session token to send as a cookie.
+    pub session_token: SecretToken,
+    /// Optional post-signin redirect.
+    pub redirect_path: Option<RedirectPath>,
 }
 
 /// Password reset request input.

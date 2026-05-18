@@ -1612,6 +1612,52 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
+    async fn email_challenge_signin_creates_verified_account_and_session()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let store = migrated_store().await?;
+        let service = AuthService::new(
+            store,
+            FixedClock::new(now()),
+            DeterministicSecretGenerator::new(),
+            HmacSecretKey::try_new(vec![9; 32])?,
+            Argon2PasswordHasher::new(
+                PasswordPolicy::try_new(8, 128)?,
+                Argon2Params::try_new(32, 1, 1)?,
+            ),
+        );
+        let challenge = service
+            .create_email_challenge(harbor_core::EmailChallengeInput {
+                purpose: ChallengePurpose::EmailSignIn,
+                delivery: ChallengeDelivery::MagicLink,
+                email: "link@example.com".to_owned(),
+                user_id: None,
+                redirect_path: Some(RedirectPath::try_new("/account")?),
+            })
+            .await?;
+
+        let signin = service
+            .sign_in_with_email_challenge(harbor_core::EmailChallengeSignInInput {
+                challenge_id: challenge.challenge.id,
+                secret: challenge.secret,
+                redirect_path: Some(RedirectPath::try_new("/account")?),
+            })
+            .await?;
+
+        assert!(signin.email.verified_at.is_some());
+        assert_eq!(
+            signin.redirect_path,
+            Some(RedirectPath::try_new("/account")?)
+        );
+        assert!(
+            service
+                .current_session(&signin.session_token)
+                .await?
+                .is_some()
+        );
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "current_thread")]
     async fn password_reset_service_is_enumeration_resistant_and_revokes_sessions()
     -> Result<(), Box<dyn std::error::Error>> {
         let store = migrated_store().await?;

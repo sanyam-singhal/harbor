@@ -35,7 +35,8 @@ pub use secret::{
     HmacSecretKey, SecretHashPurpose, constant_time_token_hash_eq, hash_secret, hash_secret_token,
 };
 pub use service::{
-    AuthService, CurrentSession, EmailChallengeInput, EmailChallengeOutput, PasswordSignInInput,
+    AuthService, CurrentSession, EmailChallengeInput, EmailChallengeOutput,
+    EmailChallengeSignInInput, EmailChallengeSignInOutput, PasswordSignInInput,
     PasswordSignInOutput, PasswordSignUpInput, PasswordSignUpOutput, RequestPasswordResetInput,
     RequestPasswordResetOutput, ResetPasswordInput, ResetPasswordOutput, VerifiedChallenge,
     VerifyChallengeInput,
