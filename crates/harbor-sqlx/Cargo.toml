@@ -10,6 +10,10 @@ publish = false
 
 [dependencies]
 harbor-core.workspace = true
+sqlx.workspace = true
+
+[dev-dependencies]
+tokio.workspace = true
 
 [lints]
 workspace = true
