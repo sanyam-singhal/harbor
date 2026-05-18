@@ -158,3 +158,74 @@ fn auth_error_response(error: AuthError) -> Response {
         .insert(REFERRER_POLICY, HeaderValue::from_static("no-referrer"));
     response
 }
+
+#[cfg(test)]
+mod tests {
+    use ::axum::http::{
+        HeaderValue,
+        header::{LOCATION, REFERRER_POLICY, SET_COOKIE},
+    };
+    use harbor_core::{AuthError, AuthErrorCode};
+
+    use super::{auth_error_response, parse_query, see_other};
+    use crate::LinkRouteResponse;
+
+    #[test]
+    fn redirect_response_sets_location_cookie_and_referrer_policy() {
+        let response = see_other(LinkRouteResponse {
+            location: "/account".to_owned(),
+            set_cookie: Some("harbor_session=token; Path=/; HttpOnly".to_owned()),
+        });
+
+        assert_eq!(response.status(), 303);
+        assert_eq!(
+            response.headers().get(LOCATION),
+            Some(&HeaderValue::from_static("/account"))
+        );
+        assert_eq!(
+            response.headers().get(REFERRER_POLICY),
+            Some(&HeaderValue::from_static("no-referrer"))
+        );
+        assert!(response.headers().get(SET_COOKIE).is_some());
+    }
+
+    #[test]
+    fn auth_errors_map_to_safe_http_responses() {
+        let rate = auth_error_response(AuthError::new(AuthErrorCode::RateLimited));
+        let invalid = auth_error_response(AuthError::new(AuthErrorCode::InvalidCredentials));
+        let internal = auth_error_response(AuthError::new(AuthErrorCode::Internal));
+
+        assert_eq!(rate.status(), 429);
+        assert_eq!(invalid.status(), 400);
+        assert_eq!(internal.status(), 503);
+        assert_eq!(
+            invalid.headers().get(REFERRER_POLICY),
+            Some(&HeaderValue::from_static("no-referrer"))
+        );
+    }
+
+    #[test]
+    fn query_parser_keeps_only_safe_redirects() {
+        let query = std::collections::HashMap::from([
+            ("challenge".to_owned(), "abc123".to_owned()),
+            ("token".to_owned(), "secret".to_owned()),
+            ("redirect".to_owned(), "/account".to_owned()),
+        ]);
+        let parsed = parse_query(query);
+        assert_eq!(parsed.challenge, "abc123");
+        assert_eq!(parsed.token, "secret");
+        assert_eq!(
+            parsed
+                .redirect
+                .as_ref()
+                .map(harbor_core::RedirectPath::as_str),
+            Some("/account")
+        );
+
+        let escaped = parse_query(std::collections::HashMap::from([(
+            "redirect".to_owned(),
+            "https://example.com".to_owned(),
+        )]));
+        assert!(escaped.redirect.is_none());
+    }
+}

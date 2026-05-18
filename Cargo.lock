@@ -1041,8 +1041,10 @@ dependencies = [
  "axum",
  "harbor-core",
  "harbor-email",
+ "harbor-sqlx",
  "harbor-test-support",
  "leptos",
+ "tokio",
 ]
 
 [[package]]

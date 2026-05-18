@@ -19,7 +19,9 @@ harbor-email.workspace = true
 leptos.workspace = true
 
 [dev-dependencies]
+harbor-sqlx.workspace = true
 harbor-test-support.workspace = true
+tokio.workspace = true
 
 [lints]
 workspace = true
