@@ -18,6 +18,7 @@ repository = "https://github.com/harbor-rs/harbor"
 authors = ["Harbor contributors"]
 
 [workspace.dependencies]
+argon2 = { version = "0.5.3", default-features = false, features = ["alloc", "password-hash"] }
 getrandom = { version = "0.3.4", default-features = false }
 harbor-core = { path = "crates/harbor-core" }
 harbor-email = { path = "crates/harbor-email" }
