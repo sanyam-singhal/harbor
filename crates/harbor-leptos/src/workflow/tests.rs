@@ -72,6 +72,7 @@ async fn test_parts_with_rate_limits(
     let request = CsrfRequest {
         cookie_header: Some(csrf_pair.clone()),
         csrf_header: Some(csrf.expose_secret().to_owned()),
+        rate_limit_key: None,
     };
     Ok((service, mailer, harbor.config().clone(), request, csrf_pair))
 }
@@ -122,6 +123,7 @@ async fn password_workflow_confirms_signs_in_loads_and_signs_out()
         CsrfRequest {
             cookie_header: Some(format!("{csrf_pair}; {session_pair}")),
             csrf_header: csrf.csrf_header,
+            rate_limit_key: None,
         },
     )
     .await?;
@@ -270,6 +272,7 @@ async fn passive_session_helpers_accept_absent_cookies() -> Result<(), Box<dyn s
         CsrfRequest {
             cookie_header: csrf.cookie_header,
             csrf_header: csrf.csrf_header,
+            rate_limit_key: None,
         },
     )
     .await?;
@@ -386,6 +389,47 @@ async fn state_changing_workflows_apply_email_rate_limits() -> Result<(), Box<dy
                 email,
                 delivery: ChallengeDelivery::MagicLink,
                 redirect_path: None,
+            },
+        )
+        .await,
+    )?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn workflows_apply_optional_request_fingerprint_rate_limits()
+-> Result<(), Box<dyn std::error::Error>> {
+    let limits = AuthRateLimits {
+        signup: RetryBudget::try_new(1)?,
+        password_signin: RetryBudget::try_new(10)?,
+        email_challenge: RetryBudget::try_new(10)?,
+        password_reset: RetryBudget::try_new(10)?,
+        window: UnixTimestampMicros::try_new(60_000_000)?,
+    };
+    let (service, mailer, config, mut csrf, _csrf_pair) =
+        test_parts_with_rate_limits(Some(limits)).await?;
+    csrf.rate_limit_key = Some("client=203.0.113.7;ua=test".to_owned());
+
+    signup_with_password(
+        &service,
+        &mailer,
+        &config,
+        csrf.clone(),
+        PasswordSignUpInput {
+            email: "fingerprint-one@example.com".to_owned(),
+            password: "correct horse battery staple".to_owned(),
+        },
+    )
+    .await?;
+    assert_rate_limited(
+        signup_with_password(
+            &service,
+            &mailer,
+            &config,
+            csrf,
+            PasswordSignUpInput {
+                email: "fingerprint-two@example.com".to_owned(),
+                password: "correct horse battery staple".to_owned(),
             },
         )
         .await,

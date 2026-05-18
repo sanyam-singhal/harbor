@@ -580,6 +580,7 @@ fn csrf_request_from_form(
     CsrfRequest {
         cookie_header: request.headers.get("cookie").cloned(),
         csrf_header: form.get("csrf").cloned(),
+        rate_limit_key: None,
     }
 }
 

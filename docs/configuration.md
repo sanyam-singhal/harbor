@@ -63,7 +63,19 @@ islands that render around server-owned auth state.
 - Magic links and OTP codes prove inbox possession only; they are not phishing
   resistant and are documented as lower assurance than hardware-backed MFA.
 - Rate limits are enforced before state-changing email/password workflows and
-  are persisted through the store using HMAC-hashed keys.
+  are persisted through the store using HMAC-hashed keys. Canonical email is
+  always used; applications can also provide a trusted request fingerprint on
+  `CsrfRequest`.
+
+## What v0.1 Does Not Claim
+
+- No social login, passkeys, WebAuthn, SAML, SCIM, or OAuth provider flows.
+- No MFA or phishing-resistant authentication claim.
+- No production-grade account administration UI.
+- No PostgreSQL or MySQL adapter yet, though the store traits and shared
+  contract tests are written for future adapters.
+- No dependency-free email provider abstraction for live delivery; Resend is
+  the only live provider in v0.1 and remains behind an explicit feature.
 
 ## Dependency Posture
 

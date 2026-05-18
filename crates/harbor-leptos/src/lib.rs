@@ -495,6 +495,12 @@ pub struct CsrfRequest {
     pub cookie_header: Option<String>,
     /// Raw configured CSRF request header.
     pub csrf_header: Option<String>,
+    /// Optional non-secret request fingerprint used for rate limiting.
+    ///
+    /// Applications can populate this from trusted edge metadata such as a
+    /// canonical client IP or IP/user-agent tuple. Harbor HMAC-hashes the value
+    /// before persistence.
+    pub rate_limit_key: Option<String>,
 }
 
 #[cfg(feature = "axum")]

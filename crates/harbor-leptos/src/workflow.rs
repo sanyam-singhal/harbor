@@ -63,6 +63,7 @@ where
     enforce_email_rate_limit(
         service,
         config,
+        &csrf,
         AuthRateLimitScope::Signup,
         &input.email,
         config.rate_limits().signup,
@@ -105,6 +106,7 @@ where
     enforce_email_rate_limit(
         service,
         config,
+        &csrf,
         AuthRateLimitScope::PasswordSignin,
         &input.email,
         config.rate_limits().password_signin,
@@ -144,6 +146,7 @@ where
     enforce_email_rate_limit(
         service,
         config,
+        &csrf,
         AuthRateLimitScope::EmailChallenge,
         &email,
         config.rate_limits().email_challenge,
@@ -189,6 +192,7 @@ where
     enforce_email_rate_limit(
         service,
         config,
+        &csrf,
         AuthRateLimitScope::EmailChallenge,
         &email,
         config.rate_limits().email_challenge,
@@ -262,6 +266,7 @@ where
     enforce_email_rate_limit(
         service,
         config,
+        &csrf,
         AuthRateLimitScope::PasswordReset,
         &input.email,
         config.rate_limits().password_reset,
@@ -371,6 +376,7 @@ fn validate_csrf_request(config: &HarborConfig, csrf: &CsrfRequest) -> Result<()
 async fn enforce_email_rate_limit<S, C, G, B>(
     service: &AuthService<S, C, G, B>,
     config: &HarborConfig,
+    csrf: &CsrfRequest,
     scope: AuthRateLimitScope,
     email: &str,
     max_count: RetryBudget,
@@ -383,10 +389,44 @@ where
 {
     let email = EmailAddress::parse(email.to_owned())
         .map_err(|_error| AuthError::new(AuthErrorCode::InvalidCredentials))?;
+    enforce_rate_limit_key(
+        service,
+        config,
+        scope,
+        format!("email:{}", email.canonical().as_str()),
+        max_count,
+    )
+    .await?;
+    if let Some(rate_limit_key) = csrf.rate_limit_key.as_deref() {
+        enforce_rate_limit_key(
+            service,
+            config,
+            scope,
+            format!("fingerprint:{rate_limit_key}"),
+            max_count,
+        )
+        .await?;
+    }
+    Ok(())
+}
+
+async fn enforce_rate_limit_key<S, C, G, B>(
+    service: &AuthService<S, C, G, B>,
+    config: &HarborConfig,
+    scope: AuthRateLimitScope,
+    key: String,
+    max_count: RetryBudget,
+) -> Result<(), AuthError>
+where
+    S: AuthStore,
+    C: Clock,
+    G: SecretGenerator,
+    B: PasswordBlocklist,
+{
     service
         .enforce_rate_limit(RateLimitInput {
             scope,
-            key: email.canonical().as_str().to_owned(),
+            key,
             max_count,
             window: config.rate_limits().window,
         })

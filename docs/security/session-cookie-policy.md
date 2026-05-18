@@ -12,7 +12,7 @@ Harbor does not store auth tokens in `localStorage` or `sessionStorage`.
 
 ## Production Cookie Defaults
 
-- Name: `__Host-harbor_session`
+- Name: `__Host-harbor-session`
 - `HttpOnly`: true
 - `Secure`: true
 - `SameSite`: `Lax` by default, configurable to `Strict`

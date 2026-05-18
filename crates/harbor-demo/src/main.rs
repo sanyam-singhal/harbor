@@ -221,6 +221,7 @@ async fn run_recording_smoke(
     let csrf_request = CsrfRequest {
         cookie_header: Some(csrf_cookie_pair.to_owned()),
         csrf_header: Some(csrf.expose_secret().to_owned()),
+        rate_limit_key: None,
     };
     let email = format!("demo-{}@example.com", SystemClock.now().as_i64());
     let password = "correct horse battery staple".to_owned();
