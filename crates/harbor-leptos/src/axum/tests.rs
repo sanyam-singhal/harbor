@@ -95,6 +95,7 @@ async fn state_router_and_route_response_are_wired() -> Result<(), Box<dyn std::
         .with_public_base_url("http://localhost:3000")?
         .with_cookie_defaults(CookieDefaults::development())?
         .with_hmac_secret_key(vec![7; 32])?
+        .with_default_email_renderer("TestAuth", "localhost")?
         .finish()?;
     let state = HarborAxumState::new(service, harbor.config().clone());
 
@@ -146,6 +147,7 @@ async fn axum_link_handlers_consume_valid_challenges() -> Result<(), Box<dyn std
         .with_public_base_url("http://localhost:3000")?
         .with_cookie_defaults(CookieDefaults::development())?
         .with_hmac_secret_key(vec![7; 32])?
+        .with_default_email_renderer("TestAuth", "localhost")?
         .finish()?;
     let state = HarborAxumState::new(service, harbor.config().clone());
 

@@ -1,6 +1,6 @@
-use harbor_core::{AuthErrorCode, PasswordPolicy, RetryBudget, SecretToken};
+use harbor_core::{AuthErrorCode, MailError, PasswordPolicy, RetryBudget, SecretToken};
 use harbor_email::{
-    ChallengeEmailInput, DefaultAuthEmailRenderer, EmailRecipient, RecordingMailer, SecretUrl,
+    AuthEmail, AuthEmailRenderer, ChallengeEmailInput, EmailRecipient, RecordingMailer, SecretUrl,
 };
 use harbor_test_support::DeterministicSecretGenerator;
 use leptos::prelude::Owner;
@@ -8,9 +8,25 @@ use leptos::prelude::Owner;
 use super::{
     CookieDefaults, CookieName, Harbor, HeaderName, PublicBaseUrl, SameSite, UnixTimestampMicros,
     build_csrf_cookie, build_delete_csrf_cookie, build_delete_session_cookie, build_session_cookie,
-    parse_cookie_value, provide_harbor_context, use_harbor_context, validate_csrf_from_headers,
-    validate_csrf_tokens,
+    expect_harbor_context, parse_cookie_value, provide_harbor_context, use_harbor_context,
+    validate_csrf_from_headers, validate_csrf_tokens,
 };
+
+#[derive(Debug)]
+struct TestRenderer;
+
+impl AuthEmailRenderer for TestRenderer {
+    fn render_challenge_email(&self, input: ChallengeEmailInput) -> Result<AuthEmail, MailError> {
+        Ok(AuthEmail::new(
+            input.purpose,
+            input.to,
+            input.challenge_id,
+            "Test subject".to_owned(),
+            "Test body".to_owned(),
+            None,
+        ))
+    }
+}
 
 #[test]
 fn builder_validates_required_configuration() -> Result<(), Box<dyn std::error::Error>> {
@@ -22,6 +38,7 @@ fn builder_validates_required_configuration() -> Result<(), Box<dyn std::error::
         .with_mailer(RecordingMailer::new())
         .with_public_base_url("https://app.example.com/")?
         .with_hmac_secret_key(vec![7; 32])?
+        .with_default_email_renderer("TestAuth", "app.example.com")?
         .finish()?;
 
     assert_eq!(
@@ -119,7 +136,7 @@ fn custom_configuration_accessors_round_trip() -> Result<(), Box<dyn std::error:
         .with_password_policy(policy)
         .with_challenge_lifetimes(lifetimes)?
         .with_rate_limits(rate_limits)?
-        .with_email_renderer(DefaultAuthEmailRenderer::new("TestAuth", "test.local")?)
+        .with_default_email_renderer("TestAuth", "test.local")?
         .finish()?;
 
     assert_eq!(harbor.store(), &"store");
@@ -168,6 +185,7 @@ fn builder_reports_each_missing_required_part() -> Result<(), Box<dyn std::error
             .with_store("store")
             .with_mailer(RecordingMailer::new())
             .with_hmac_secret_key(vec![7; 32])?
+            .with_default_email_renderer("TestAuth", "localhost")?
             .finish()
             .is_err()
     );
@@ -176,6 +194,16 @@ fn builder_reports_each_missing_required_part() -> Result<(), Box<dyn std::error
             .with_store("store")
             .with_mailer(RecordingMailer::new())
             .with_public_base_url("http://localhost:3000")?
+            .with_default_email_renderer("TestAuth", "localhost")?
+            .finish()
+            .is_err()
+    );
+    assert!(
+        Harbor::builder()
+            .with_store("store")
+            .with_mailer(RecordingMailer::new())
+            .with_public_base_url("http://localhost:3000")?
+            .with_hmac_secret_key(vec![7; 32])?
             .finish()
             .is_err()
     );
@@ -239,18 +267,58 @@ fn rate_limit_window_must_be_positive() -> Result<(), Box<dyn std::error::Error>
 }
 
 #[test]
+fn builder_accepts_custom_renderer_and_rejects_bad_default_renderer()
+-> Result<(), Box<dyn std::error::Error>> {
+    let harbor = Harbor::builder()
+        .with_store("store")
+        .with_mailer(RecordingMailer::new())
+        .with_public_base_url("http://localhost:3000")?
+        .with_hmac_secret_key(vec![7; 32])?
+        .with_email_renderer(TestRenderer)
+        .finish()?;
+    let rendered =
+        harbor
+            .config()
+            .email_renderer()
+            .render_challenge_email(ChallengeEmailInput {
+                purpose: harbor_core::ChallengePurpose::EmailSignIn,
+                delivery: harbor_core::ChallengeDelivery::OtpCode,
+                to: EmailRecipient::parse("user@example.com")?,
+                challenge_id: harbor_core::ChallengeId::try_new("challenge00000002")?,
+                action_url: None,
+                otp_code: Some(SecretToken::try_new("12345678")?),
+            })?;
+    assert_eq!(rendered.subject(), "Test subject");
+
+    let invalid = Harbor::builder()
+        .with_store("store")
+        .with_mailer(RecordingMailer::new())
+        .with_public_base_url("http://localhost:3000")?
+        .with_hmac_secret_key(vec![7; 32])?
+        .with_default_email_renderer("", "localhost");
+    assert!(invalid.is_err());
+    Ok(())
+}
+
+#[test]
 fn leptos_context_round_trips_harbor_shell() -> Result<(), Box<dyn std::error::Error>> {
     let harbor = Harbor::builder()
         .with_store("store")
         .with_mailer(RecordingMailer::new())
         .with_public_base_url("http://localhost:3000")?
         .with_hmac_secret_key(vec![7; 32])?
+        .with_default_email_renderer("TestAuth", "localhost")?
         .finish()?;
     let owner = Owner::new();
 
     owner.with(|| {
         provide_harbor_context(harbor.clone());
         let loaded = use_harbor_context::<&'static str, RecordingMailer>();
+        let expected = expect_harbor_context::<&'static str, RecordingMailer>();
+        assert_eq!(
+            expected.harbor().config().public_base_url().as_str(),
+            "http://localhost:3000"
+        );
         match loaded {
             Some(context) => {
                 assert_eq!(
@@ -330,8 +398,9 @@ fn csrf_tokens_validate_through_cookie_and_header() -> Result<(), Box<dyn std::e
         .with_mailer(RecordingMailer::new())
         .with_public_base_url("http://localhost:3000")?
         .with_hmac_secret_key(vec![7; 32])?
+        .with_default_email_renderer("TestAuth", "localhost")?
         .finish()?;
-    let token = super::issue_csrf_token(&DeterministicSecretGenerator::new())?;
+    let token = super::issue_csrf_token(harbor.config(), &DeterministicSecretGenerator::new())?;
     let csrf_cookie = build_csrf_cookie(harbor.config().cookie_defaults(), &token, None)?;
     let cookie_header = match csrf_cookie.split(';').next() {
         Some(value) => value,

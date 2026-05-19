@@ -9,9 +9,7 @@ use harbor_core::{
 };
 #[cfg(feature = "email-resend")]
 use harbor_email::ResendMailer;
-use harbor_email::{
-    AuthEmail, AuthMailer, DefaultAuthEmailRenderer, MailDelivery, RecordingMailer,
-};
+use harbor_email::{AuthEmail, AuthMailer, MailDelivery, RecordingMailer};
 use harbor_leptos::{CookieDefaults, CsrfRequest, Harbor, build_csrf_cookie, issue_csrf_token};
 use harbor_sqlx::{SqliteAuthStore, SqliteStoreOptions};
 
@@ -42,10 +40,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_public_base_url(settings.public_base_url.clone())?
         .with_cookie_defaults(CookieDefaults::development())?
         .with_hmac_secret_key(settings.hmac_key.clone())?
-        .with_email_renderer(DefaultAuthEmailRenderer::new(
-            settings.product_name.clone(),
-            settings.email_site_name(),
-        )?)
+        .with_default_email_renderer(settings.product_name.clone(), settings.email_site_name())?
         .finish()?;
 
     println!(
@@ -105,11 +100,11 @@ impl DemoSettings {
             public_base_url: env::var("HARBOR_PUBLIC_BASE_URL")
                 .unwrap_or_else(|_error| DEFAULT_PUBLIC_BASE_URL.to_owned()),
             product_name: env::var("HARBOR_PRODUCT_NAME")
-                .unwrap_or_else(|_error| "Harbor".to_owned()),
+                .map_err(|_error| "HARBOR_PRODUCT_NAME is required")?,
             email_site_name: env::var("HARBOR_EMAIL_SITE_NAME").ok(),
             hmac_key: env::var("HARBOR_HMAC_KEY")
                 .map(|value| value.into_bytes())
-                .unwrap_or_else(|_error| vec![42; 32]),
+                .map_err(|_error| "HARBOR_HMAC_KEY is required")?,
             email_mode: DemoEmailMode::from_env()?,
             smoke_email: env::var("HARBOR_HEADLESS_DEMO_SMOKE_EMAIL").ok(),
             run_smoke: env_bool("HARBOR_HEADLESS_DEMO_SMOKE"),
@@ -246,7 +241,7 @@ async fn run_recording_smoke(
     smoke_email: Option<String>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let service = auth_service(store, hmac_key)?;
-    let csrf = issue_csrf_token(&SystemSecretGenerator)?;
+    let csrf = issue_csrf_token(config, &SystemSecretGenerator)?;
     let csrf_cookie = build_csrf_cookie(config.cookie_defaults(), &csrf, None)?;
     let csrf_cookie_pair = first_cookie_pair(&csrf_cookie)?;
     let csrf_request = CsrfRequest {

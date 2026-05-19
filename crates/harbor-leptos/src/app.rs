@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use harbor_core::{ConfigError, ConfigErrorCode, HmacSecretKey, PasswordPolicy};
-use harbor_email::AuthEmailRenderer;
+use harbor_email::{AuthEmailRenderer, DefaultAuthEmailRenderer};
 
 use crate::{
     AuthRateLimits, ChallengeLifetimes, CookieDefaults, HarborConfig, HarborConfigBuilder,
@@ -213,6 +213,24 @@ impl<S, M> HarborBuilder<S, M> {
     pub fn with_email_renderer(mut self, renderer: impl AuthEmailRenderer) -> Self {
         self.config.email_renderer = Some(Arc::new(renderer));
         self
+    }
+
+    /// Sets Harbor's bundled Rust auth email renderer with app-owned labels.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ConfigError`] when the product or site name is invalid.
+    pub fn with_default_email_renderer(
+        mut self,
+        product_name: impl Into<String>,
+        site_name: impl Into<String>,
+    ) -> Result<Self, ConfigError> {
+        let renderer =
+            DefaultAuthEmailRenderer::new(product_name, site_name).map_err(|_error| {
+                ConfigError::with_detail(ConfigErrorCode::Invalid, "email_renderer")
+            })?;
+        self.config.email_renderer = Some(Arc::new(renderer));
+        Ok(self)
     }
 
     /// Finishes the builder.

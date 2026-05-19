@@ -7,6 +7,7 @@ Required production environment:
 
 - `HARBOR_PUBLIC_BASE_URL=https://issuecertificate.com`
 - `HARBOR_DATABASE_URL=sqlite:///var/lib/harbor/harbor.sqlite?mode=rwc`
+- `HARBOR_PRODUCT_NAME` set to the display name for auth email
 - `HARBOR_HMAC_KEY` set to at least 32 bytes of secret material
 - `HARBOR_EMAIL_MODE=resend`
 - `RESEND_API_KEY` for live Resend delivery
@@ -22,13 +23,17 @@ Reverse proxy requirements:
 Local smoke check:
 
 ```sh
-HARBOR_HEADLESS_DEMO_SMOKE=1 cargo run -p harbor-headless-demo
+HARBOR_PRODUCT_NAME=Harbor \
+HARBOR_HMAC_KEY=local-recording-smoke-key-at-least-32b \
+HARBOR_HEADLESS_DEMO_SMOKE=1 \
+cargo run -p harbor-headless-demo
 ```
 
 Live Resend smoke check:
 
 ```sh
 HARBOR_EMAIL_MODE=resend \
+HARBOR_PRODUCT_NAME=Harbor \
 HARBOR_HEADLESS_DEMO_SMOKE=1 \
 cargo run -p harbor-headless-demo --features email-resend
 ```

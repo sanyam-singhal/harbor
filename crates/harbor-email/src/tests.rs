@@ -1,8 +1,8 @@
 use harbor_core::{ChallengeDelivery, ChallengeId, ChallengePurpose, SecretToken};
 
 use super::{
-    AuthEmail, AuthEmailRenderer, AuthMailer, ChallengeEmailInput, EmailRecipient, MailError,
-    RecordingMailer, SecretUrl, render_challenge_email, render_challenge_email_with_renderer,
+    AuthEmail, AuthEmailRenderer, AuthMailer, ChallengeEmailInput, DefaultAuthEmailRenderer,
+    EmailRecipient, MailError, RecordingMailer, SecretUrl, render_challenge_email_with_renderer,
 };
 
 #[derive(Debug)]
@@ -19,6 +19,24 @@ impl AuthEmailRenderer for AppRenderer {
             Some("<p>App auth HTML</p>".to_owned()),
         ))
     }
+}
+
+fn render_with_default(input: ChallengeEmailInput) -> Result<AuthEmail, MailError> {
+    let renderer = DefaultAuthEmailRenderer::new("TestAuth", "test app")?;
+    render_challenge_email_with_renderer(input, &renderer)
+}
+
+#[test]
+fn default_renderer_validates_and_exposes_app_labels() -> Result<(), Box<dyn std::error::Error>> {
+    let renderer = DefaultAuthEmailRenderer::new("Product", "example.com")?;
+
+    assert_eq!(renderer.product_name(), "Product");
+    assert_eq!(renderer.site_name(), "example.com");
+    assert!(DefaultAuthEmailRenderer::new("", "example.com").is_err());
+    assert!(DefaultAuthEmailRenderer::new("Product", "").is_err());
+    assert!(DefaultAuthEmailRenderer::new("x".repeat(16 * 1024 + 1), "example.com").is_err());
+    assert!(DefaultAuthEmailRenderer::new("Product\n", "example.com").is_err());
+    Ok(())
 }
 
 #[cfg(feature = "email-resend")]
@@ -67,7 +85,7 @@ fn join_resend_server(
 #[tokio::test(flavor = "current_thread")]
 async fn recording_mailer_captures_rendered_email() -> Result<(), Box<dyn std::error::Error>> {
     let mailer = RecordingMailer::new();
-    let email = render_challenge_email(ChallengeEmailInput {
+    let email = render_with_default(ChallengeEmailInput {
         purpose: ChallengePurpose::SignupConfirmation,
         delivery: ChallengeDelivery::MagicLink,
         to: EmailRecipient::parse("User@Example.com")?,
@@ -89,14 +107,14 @@ async fn recording_mailer_captures_rendered_email() -> Result<(), Box<dyn std::e
     assert_eq!(sent.to().original(), "User@Example.com");
     assert_eq!(sent.kind(), ChallengePurpose::SignupConfirmation);
     assert_eq!(sent.challenge_id().as_str(), "challenge00000001");
-    assert_eq!(sent.subject(), "Confirm your Harbor sign-up");
+    assert_eq!(sent.subject(), "Confirm your TestAuth sign-up");
     assert!(
         sent.text_body()
             .contains("https://app.example.com/auth/confirm-email")
     );
     assert!(
         sent.text_body()
-            .contains("You requested a Harbor account for your application")
+            .contains("You requested a TestAuth account for test app")
     );
     assert!(sent.text_body().contains("If you did not request this"));
     assert!(!format!("{sent:?}").contains("abc"));
@@ -107,7 +125,7 @@ async fn recording_mailer_captures_rendered_email() -> Result<(), Box<dyn std::e
 
 #[test]
 fn template_requires_secret_matching_delivery() -> Result<(), Box<dyn std::error::Error>> {
-    let result = render_challenge_email(ChallengeEmailInput {
+    let result = render_with_default(ChallengeEmailInput {
         purpose: ChallengePurpose::EmailSignIn,
         delivery: ChallengeDelivery::OtpCode,
         to: EmailRecipient::parse("user@example.com")?,
@@ -122,7 +140,7 @@ fn template_requires_secret_matching_delivery() -> Result<(), Box<dyn std::error
 
 #[test]
 fn otp_template_renders_code_and_escapes_html() -> Result<(), Box<dyn std::error::Error>> {
-    let email = render_challenge_email(ChallengeEmailInput {
+    let email = render_with_default(ChallengeEmailInput {
         purpose: ChallengePurpose::EmailSignIn,
         delivery: ChallengeDelivery::OtpCode,
         to: EmailRecipient::parse("user@example.com")?,
@@ -136,7 +154,7 @@ fn otp_template_renders_code_and_escapes_html() -> Result<(), Box<dyn std::error
     };
 
     assert!(email.text_body().contains("12345678"));
-    assert!(email.subject().contains("Harbor"));
+    assert!(email.subject().contains("TestAuth"));
     assert!(html.contains("<strong>12345678</strong>"));
     assert!(!format!("{email:?}").contains("12345678"));
     Ok(())
@@ -147,7 +165,7 @@ fn combined_template_renders_link_code_and_html_escapes() -> Result<(), Box<dyn 
 {
     let secret_url =
         SecretUrl::try_new("https://app.example.com/auth/email-link?x=<tag>&quote=\"'")?;
-    let email = render_challenge_email(ChallengeEmailInput {
+    let email = render_with_default(ChallengeEmailInput {
         purpose: ChallengePurpose::PasswordReset,
         delivery: ChallengeDelivery::Both,
         to: EmailRecipient::parse("user@example.com")?,
@@ -160,7 +178,7 @@ fn combined_template_renders_link_code_and_html_escapes() -> Result<(), Box<dyn 
         None => return Err("html body should render".into()),
     };
 
-    assert_eq!(email.subject(), "Reset your Harbor password");
+    assert_eq!(email.subject(), "Reset your TestAuth password");
     assert!(email.text_body().contains(secret_url.expose_secret()));
     assert!(email.text_body().contains("87654321"));
     assert!(html.contains("&lt;tag&gt;"));
@@ -240,7 +258,7 @@ async fn resend_mailer_sends_to_configured_base_url() -> Result<(), Box<dyn std:
     let (base_url, server) = spawn_resend_server("HTTP/1.1 200 OK", "", "{\"id\":\"email_test\"}")?;
     let mailer =
         super::ResendMailer::with_base_url("re_test", "Harbor <auth@example.com>", &base_url)?;
-    let email = render_challenge_email(ChallengeEmailInput {
+    let email = render_with_default(ChallengeEmailInput {
         purpose: ChallengePurpose::EmailSignIn,
         delivery: ChallengeDelivery::Both,
         to: EmailRecipient::parse("User@Example.com")?,
@@ -275,7 +293,7 @@ async fn resend_mailer_maps_rate_limits() -> Result<(), Box<dyn std::error::Erro
     )?;
     let mailer =
         super::ResendMailer::with_base_url("re_test", "Harbor <auth@example.com>", &base_url)?;
-    let email = render_challenge_email(ChallengeEmailInput {
+    let email = render_with_default(ChallengeEmailInput {
         purpose: ChallengePurpose::EmailSignIn,
         delivery: ChallengeDelivery::MagicLink,
         to: EmailRecipient::parse("user@example.com")?,

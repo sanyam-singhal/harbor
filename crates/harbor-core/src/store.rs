@@ -257,6 +257,80 @@ pub struct InsertPasswordInput {
     pub password_version: i64,
 }
 
+/// Input for atomically creating a password-backed user.
+#[derive(Clone, PartialEq, Eq)]
+pub struct CreatePasswordUserInput {
+    /// User id to persist.
+    pub user_id: UserId,
+    /// Email row id to persist.
+    pub email_id: UserEmailId,
+    /// Original email spelling.
+    pub email_original: String,
+    /// Canonical email lookup key.
+    pub email_canonical: CanonicalEmail,
+    /// PHC password hash.
+    pub password_hash: PasswordHashString,
+    /// Timestamp when the password was set.
+    pub password_set_at: UnixTimestampMicros,
+    /// Application credential version.
+    pub password_version: i64,
+    /// Current timestamp.
+    pub now: UnixTimestampMicros,
+}
+
+impl core::fmt::Debug for CreatePasswordUserInput {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter
+            .debug_struct("CreatePasswordUserInput")
+            .field("user_id", &self.user_id)
+            .field("email_id", &self.email_id)
+            .field("email_original", &self.email_original)
+            .field("email_canonical", &self.email_canonical)
+            .field("password_hash", &"[REDACTED]")
+            .field("password_set_at", &self.password_set_at)
+            .field("password_version", &self.password_version)
+            .field("now", &self.now)
+            .finish()
+    }
+}
+
+/// Output from atomically creating a password-backed user.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CreatePasswordUserOutput {
+    /// Created user.
+    pub user: UserRecord,
+    /// Created primary email.
+    pub email: UserEmailRecord,
+    /// Created password credential.
+    pub credential: PasswordCredentialRecord,
+}
+
+/// Input for atomically creating a verified passwordless email account.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CreateVerifiedEmailUserInput {
+    /// User id to persist.
+    pub user_id: UserId,
+    /// Email row id to persist.
+    pub email_id: UserEmailId,
+    /// Original email spelling.
+    pub email_original: String,
+    /// Canonical email lookup key.
+    pub email_canonical: CanonicalEmail,
+    /// Verification timestamp.
+    pub verified_at: UnixTimestampMicros,
+    /// Current timestamp.
+    pub now: UnixTimestampMicros,
+}
+
+/// Output from atomically creating a verified passwordless email account.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CreateVerifiedEmailUserOutput {
+    /// Created user.
+    pub user: UserRecord,
+    /// Created verified primary email.
+    pub email: UserEmailRecord,
+}
+
 impl core::fmt::Debug for InsertPasswordInput {
     fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         formatter
@@ -642,6 +716,39 @@ pub trait AuthEventStore: Clone + Send + Sync + 'static {
     ) -> impl Future<Output = Result<AuthEventRecord, StoreError>> + Send;
 }
 
+/// Cross-table account creation operations.
+pub trait AccountStore: Clone + Send + Sync + 'static {
+    /// Creates a user, primary email, and password credential atomically.
+    ///
+    /// Implementations must fail without committing partial rows if any user
+    /// id, email id, or canonical email uniqueness constraint rejects the
+    /// request.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] when persistence fails or a unique constraint
+    /// conflicts.
+    fn create_password_user(
+        &self,
+        input: CreatePasswordUserInput,
+    ) -> impl Future<Output = Result<CreatePasswordUserOutput, StoreError>> + Send;
+
+    /// Creates a user and verified primary email atomically.
+    ///
+    /// Implementations must fail without committing partial rows if any user
+    /// id, email id, or canonical email uniqueness constraint rejects the
+    /// request.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] when persistence fails or a unique constraint
+    /// conflicts.
+    fn create_verified_email_user(
+        &self,
+        input: CreateVerifiedEmailUserInput,
+    ) -> impl Future<Output = Result<CreateVerifiedEmailUserOutput, StoreError>> + Send;
+}
+
 /// Composite Harbor auth store.
 pub trait AuthStore:
     UserStore
@@ -651,6 +758,7 @@ pub trait AuthStore:
     + SessionStore
     + RateLimitStore
     + AuthEventStore
+    + AccountStore
 {
 }
 
@@ -662,6 +770,7 @@ impl<T> AuthStore for T where
         + SessionStore
         + RateLimitStore
         + AuthEventStore
+        + AccountStore
 {
 }
 

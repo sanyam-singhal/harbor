@@ -1,6 +1,7 @@
 use crate::{
-    ChallengeDelivery, ChallengePurpose, InsertPasswordInput, PasswordCredentialRecord, StoreError,
-    StoreErrorCode, UnixTimestampMicros, UserId,
+    ChallengeDelivery, ChallengePurpose, CreatePasswordUserInput, EmailAddress,
+    InsertPasswordInput, PasswordCredentialRecord, StoreError, StoreErrorCode, UnixTimestampMicros,
+    UserEmailId, UserId,
 };
 
 #[test]
@@ -28,6 +29,21 @@ fn password_records_do_not_debug_hashes() -> Result<(), Box<dyn std::error::Erro
     let input_debug = format!("{input:?}");
     assert!(input_debug.contains("[REDACTED]"));
     assert!(!input_debug.contains(phc));
+
+    let email = EmailAddress::parse("user@example.com")?;
+    let create = CreatePasswordUserInput {
+        user_id: UserId::try_new("user000000000002")?,
+        email_id: UserEmailId::try_new("email00000000002")?,
+        email_original: email.original().to_owned(),
+        email_canonical: email.canonical().clone(),
+        password_hash: crate::PasswordHashString::try_new(phc)?,
+        password_set_at: UnixTimestampMicros::EPOCH,
+        password_version: 1,
+        now: UnixTimestampMicros::EPOCH,
+    };
+    let create_debug = format!("{create:?}");
+    assert!(create_debug.contains("[REDACTED]"));
+    assert!(!create_debug.contains(phc));
 
     let error = StoreError::new(StoreErrorCode::CorruptData);
     assert_eq!(error.to_string(), "storage operation failed");

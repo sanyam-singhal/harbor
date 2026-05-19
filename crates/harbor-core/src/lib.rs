@@ -42,12 +42,14 @@ pub use service::{
     VerifiedChallenge, VerifyChallengeInput,
 };
 pub use store::{
-    AppendAuthEventInput, AuthEventKind, AuthEventRecord, AuthEventStore, AuthStore,
+    AccountStore, AppendAuthEventInput, AuthEventKind, AuthEventRecord, AuthEventStore, AuthStore,
     ChallengeDelivery, ChallengePurpose, ChallengeRecord, ChallengeStore, CreateChallengeInput,
-    CreateSessionInput, CreateUserEmailInput, CreateUserInput, DeleteExpiredSessionsInput,
-    FindEmailByCanonicalInput, GetChallengeInput, GetPasswordCredentialInput, GetSessionInput,
-    GetUserInput, IncrementChallengeAttemptsInput, IncrementRateLimitInput, InsertPasswordInput,
-    MarkEmailVerifiedInput, PasswordCredentialRecord, PasswordCredentialStore, RateLimitDecision,
-    RateLimitStore, RevokeSessionInput, RevokeUserSessionsInput, SessionRecord, SessionStore,
-    UpdateSessionLastSeenInput, UserEmailRecord, UserEmailStore, UserRecord, UserStore,
+    CreatePasswordUserInput, CreatePasswordUserOutput, CreateSessionInput, CreateUserEmailInput,
+    CreateUserInput, CreateVerifiedEmailUserInput, CreateVerifiedEmailUserOutput,
+    DeleteExpiredSessionsInput, FindEmailByCanonicalInput, GetChallengeInput,
+    GetPasswordCredentialInput, GetSessionInput, GetUserInput, IncrementChallengeAttemptsInput,
+    IncrementRateLimitInput, InsertPasswordInput, MarkEmailVerifiedInput, PasswordCredentialRecord,
+    PasswordCredentialStore, RateLimitDecision, RateLimitStore, RevokeSessionInput,
+    RevokeUserSessionsInput, SessionRecord, SessionStore, UpdateSessionLastSeenInput,
+    UserEmailRecord, UserEmailStore, UserRecord, UserStore,
 };

@@ -10,9 +10,9 @@ use std::sync::Arc;
 use harbor_core::{
     AuthError, AuthErrorCode, ConfigError, ConfigErrorCode, HmacSecretKey, PasswordPolicy,
     RetryBudget, SecretGenerator, SecretHashPurpose, SecretToken, UnixTimestampMicros,
-    constant_time_token_hash_eq, hash_secret_token, random_url_token,
+    constant_time_token_hash_eq, hash_secret, random_url_token,
 };
-use harbor_email::{AuthEmailRenderer, DefaultAuthEmailRenderer};
+use harbor_email::AuthEmailRenderer;
 
 /// Version of the `harbor-leptos` crate.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -46,6 +46,7 @@ const DEFAULT_RATE_LIMIT_WINDOW_MICROS: i64 = 15 * 60 * 1_000_000;
 const DEFAULT_SIGNUP_CHALLENGE_MICROS: i64 = 30 * 60 * 1_000_000;
 const DEFAULT_EMAIL_SIGNIN_CHALLENGE_MICROS: i64 = 10 * 60 * 1_000_000;
 const DEFAULT_PASSWORD_RESET_CHALLENGE_MICROS: i64 = 15 * 60 * 1_000_000;
+const CSRF_TOKEN_SEPARATOR: char = '.';
 
 /// Validated Harbor configuration.
 #[derive(Clone)]
@@ -161,14 +162,9 @@ impl HarborConfigBuilder {
         let public_base_url = self
             .public_base_url
             .ok_or_else(|| ConfigError::with_detail(ConfigErrorCode::Missing, "public_base_url"))?;
-        let email_renderer = match self.email_renderer {
-            Some(renderer) => renderer,
-            None => Arc::new(
-                DefaultAuthEmailRenderer::new("Harbor", public_base_url.display_host()).map_err(
-                    |_error| ConfigError::with_detail(ConfigErrorCode::Invalid, "email_renderer"),
-                )?,
-            ),
-        };
+        let email_renderer = self
+            .email_renderer
+            .ok_or_else(|| ConfigError::with_detail(ConfigErrorCode::Missing, "email_renderer"))?;
         Ok(HarborConfig {
             public_base_url,
             cookie_defaults: self.cookie_defaults,
@@ -463,14 +459,30 @@ pub fn parse_cookie_value(cookie_header: &str, name: &CookieName) -> Option<Stri
     })
 }
 
-/// Issues a new CSRF token.
+/// Issues a new signed CSRF token.
 ///
 /// # Errors
 ///
-/// Returns [`AuthError`] when secure randomness fails.
-pub fn issue_csrf_token(generator: &impl SecretGenerator) -> Result<SecretToken, AuthError> {
-    random_url_token(generator)
-        .map_err(|_error| AuthError::with_detail(AuthErrorCode::Internal, "csrf_token"))
+/// Returns [`AuthError`] when secure randomness or token signing fails.
+pub fn issue_csrf_token(
+    config: &HarborConfig,
+    generator: &impl SecretGenerator,
+) -> Result<SecretToken, AuthError> {
+    let nonce = random_url_token(generator)
+        .map_err(|_error| AuthError::with_detail(AuthErrorCode::Internal, "csrf_token"))?;
+    let signature = hash_secret(
+        config.hmac_secret_key(),
+        SecretHashPurpose::CsrfToken,
+        nonce.expose_secret().as_bytes(),
+    )
+    .map_err(|_error| AuthError::with_detail(AuthErrorCode::Internal, "csrf_signature"))?;
+    SecretToken::try_new(format!(
+        "{}{}{}",
+        nonce.expose_secret(),
+        CSRF_TOKEN_SEPARATOR,
+        lower_hex(signature.as_bytes())
+    ))
+    .map_err(|_error| AuthError::with_detail(AuthErrorCode::Internal, "csrf_token_format"))
 }
 
 /// Validates a CSRF double-submit cookie/header pair.
@@ -478,28 +490,16 @@ pub fn issue_csrf_token(generator: &impl SecretGenerator) -> Result<SecretToken,
 /// # Errors
 ///
 /// Returns [`AuthError`] when either token is missing, malformed, or does not
-/// match under Harbor's configured token hash key.
+/// carry a valid signature under Harbor's configured token hash key.
 pub fn validate_csrf_tokens(
     config: &HarborConfig,
     cookie_token: Option<&str>,
     header_token: Option<&str>,
 ) -> Result<(), AuthError> {
-    let cookie_token = parse_presented_csrf(cookie_token)?;
-    let header_token = parse_presented_csrf(header_token)?;
-    let cookie_hash = hash_secret_token(
-        config.hmac_secret_key(),
-        SecretHashPurpose::CsrfToken,
-        &cookie_token,
-    )
-    .map_err(|_error| AuthError::with_detail(AuthErrorCode::Csrf, "csrf_cookie_hash"))?;
-    let header_hash = hash_secret_token(
-        config.hmac_secret_key(),
-        SecretHashPurpose::CsrfToken,
-        &header_token,
-    )
-    .map_err(|_error| AuthError::with_detail(AuthErrorCode::Csrf, "csrf_header_hash"))?;
+    let cookie_token = parse_presented_csrf(config, cookie_token)?;
+    let header_token = parse_presented_csrf(config, header_token)?;
 
-    if constant_time_token_hash_eq(&cookie_hash, &header_hash) {
+    if constant_time_token_hash_eq(&cookie_token, &header_token) {
         Ok(())
     } else {
         Err(AuthError::new(AuthErrorCode::Csrf))
@@ -761,6 +761,15 @@ fn hex_digit(value: u8) -> char {
     }
 }
 
+fn lower_hex(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        out.push(hex_digit(byte >> 4));
+        out.push(hex_digit(byte & 0x0f));
+    }
+    out
+}
+
 fn build_cookie_header(
     name: &CookieName,
     value: &str,
@@ -830,9 +839,54 @@ fn validate_cookie_value(value: &str) -> Result<(), ConfigError> {
     Ok(())
 }
 
-fn parse_presented_csrf(value: Option<&str>) -> Result<SecretToken, AuthError> {
+fn parse_presented_csrf(
+    config: &HarborConfig,
+    value: Option<&str>,
+) -> Result<harbor_core::TokenHash, AuthError> {
     let value = value.ok_or_else(|| AuthError::new(AuthErrorCode::Csrf))?;
-    SecretToken::try_new(value.to_owned()).map_err(|_error| AuthError::new(AuthErrorCode::Csrf))
+    let (nonce, signature) = value
+        .split_once(CSRF_TOKEN_SEPARATOR)
+        .ok_or_else(|| AuthError::new(AuthErrorCode::Csrf))?;
+    if signature.contains(CSRF_TOKEN_SEPARATOR) {
+        return Err(AuthError::new(AuthErrorCode::Csrf));
+    }
+    let nonce = SecretToken::try_new(nonce.to_owned())
+        .map_err(|_error| AuthError::new(AuthErrorCode::Csrf))?;
+    let expected = hash_secret(
+        config.hmac_secret_key(),
+        SecretHashPurpose::CsrfToken,
+        nonce.expose_secret().as_bytes(),
+    )
+    .map_err(|_error| AuthError::with_detail(AuthErrorCode::Csrf, "csrf_signature"))?;
+    let presented = harbor_core::TokenHash::try_new(decode_hex(signature)?)
+        .map_err(|_error| AuthError::new(AuthErrorCode::Csrf))?;
+    if constant_time_token_hash_eq(&expected, &presented) {
+        Ok(presented)
+    } else {
+        Err(AuthError::new(AuthErrorCode::Csrf))
+    }
+}
+
+fn decode_hex(value: &str) -> Result<Vec<u8>, AuthError> {
+    if value.is_empty() || !value.len().is_multiple_of(2) {
+        return Err(AuthError::new(AuthErrorCode::Csrf));
+    }
+    let mut bytes = Vec::with_capacity(value.len() / 2);
+    for pair in value.as_bytes().chunks_exact(2) {
+        let high = hex_value(pair[0]).ok_or_else(|| AuthError::new(AuthErrorCode::Csrf))?;
+        let low = hex_value(pair[1]).ok_or_else(|| AuthError::new(AuthErrorCode::Csrf))?;
+        bytes.push((high << 4) | low);
+    }
+    Ok(bytes)
+}
+
+fn hex_value(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
 }
 
 fn same_site_value(same_site: SameSite) -> &'static str {

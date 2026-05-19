@@ -20,6 +20,7 @@ module.exports = defineConfig({
       HARBOR_DATABASE_URL: "sqlite::memory:",
       HARBOR_HEADLESS_DEMO_ADDR: "127.0.0.1:39211",
       HARBOR_PUBLIC_BASE_URL: "http://127.0.0.1:39211",
+      HARBOR_PRODUCT_NAME: "Harbor",
       HARBOR_HMAC_KEY: "playwright-recording-smoke-key-32b"
     }
   }

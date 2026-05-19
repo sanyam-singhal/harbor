@@ -83,12 +83,12 @@ async fn handle_browser_request(
 fn signup_page(
     config: &harbor_leptos::HarborConfig,
 ) -> Result<DemoHttpResponse, Box<dyn std::error::Error>> {
-    let csrf = issue_csrf_token(&SystemSecretGenerator)?;
+    let csrf = issue_csrf_token(config, &SystemSecretGenerator)?;
     let csrf_cookie = build_csrf_cookie(config.cookie_defaults(), &csrf, None)?;
     let body = format!(
         concat!(
             "<!doctype html><html><body>",
-            "<main><h1>Harbor signup</h1>",
+            "<main><h1>Create account</h1>",
             "<form method=\"post\" action=\"/signup\">",
             "<input type=\"hidden\" name=\"csrf\" value=\"{}\">",
             "<label>Email <input name=\"email\" type=\"email\" required></label>",
@@ -166,7 +166,7 @@ fn signin_page(
     config: &harbor_leptos::HarborConfig,
     message: Option<&str>,
 ) -> Result<DemoHttpResponse, Box<dyn std::error::Error>> {
-    let csrf = issue_csrf_token(&SystemSecretGenerator)?;
+    let csrf = issue_csrf_token(config, &SystemSecretGenerator)?;
     let csrf_cookie = build_csrf_cookie(config.cookie_defaults(), &csrf, None)?;
     let message_html = message
         .map(normalize_signin_message)
@@ -176,7 +176,7 @@ fn signin_page(
     let body = format!(
         concat!(
             "<!doctype html><html><body>",
-            "<main><h1>Harbor signin</h1>{}",
+            "<main><h1>Sign in</h1>{}",
             "<form method=\"post\" action=\"/signin\">",
             "<input type=\"hidden\" name=\"csrf\" value=\"{}\">",
             "<label>Email <input name=\"email\" type=\"email\" required></label>",
@@ -335,7 +335,7 @@ fn email_code_verify_page(
     challenge_id: &str,
     code: &str,
 ) -> Result<DemoHttpResponse, Box<dyn std::error::Error>> {
-    let csrf = issue_csrf_token(&SystemSecretGenerator)?;
+    let csrf = issue_csrf_token(config, &SystemSecretGenerator)?;
     let csrf_cookie = build_csrf_cookie(config.cookie_defaults(), &csrf, None)?;
     let body = format!(
         concat!(
@@ -451,7 +451,7 @@ fn reset_password_page(
     request: DemoHttpRequest,
     config: &harbor_leptos::HarborConfig,
 ) -> Result<DemoHttpResponse, Box<dyn std::error::Error>> {
-    let csrf = issue_csrf_token(&SystemSecretGenerator)?;
+    let csrf = issue_csrf_token(config, &SystemSecretGenerator)?;
     let csrf_cookie = build_csrf_cookie(config.cookie_defaults(), &csrf, None)?;
     let challenge = required_query_value(&request, "challenge")?;
     let token = required_query_value(&request, "token")?;
@@ -521,7 +521,7 @@ async fn account_page(
     )
     .await?;
     let (status, headers, body) = if current.is_some() {
-        let csrf = issue_csrf_token(&SystemSecretGenerator)?;
+        let csrf = issue_csrf_token(config, &SystemSecretGenerator)?;
         let csrf_cookie = build_csrf_cookie(config.cookie_defaults(), &csrf, None)?;
         (
             200,
@@ -590,7 +590,7 @@ fn auth_email_request_page(
     action: &str,
     button: &str,
 ) -> Result<DemoHttpResponse, Box<dyn std::error::Error>> {
-    let csrf = issue_csrf_token(&SystemSecretGenerator)?;
+    let csrf = issue_csrf_token(config, &SystemSecretGenerator)?;
     let csrf_cookie = build_csrf_cookie(config.cookie_defaults(), &csrf, None)?;
     let body = format!(
         concat!(

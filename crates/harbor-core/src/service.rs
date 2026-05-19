@@ -2,8 +2,8 @@
 
 use crate::{
     Argon2PasswordHasher, AuthError, AuthErrorCode, AuthStore, ChallengeDelivery, ChallengePurpose,
-    ChallengeRecord, Clock, CommonPasswordBlocklist, CreateChallengeInput, CreateSessionInput,
-    CreateUserEmailInput, CreateUserInput, EmailAddress, FindEmailByCanonicalInput,
+    ChallengeRecord, Clock, CommonPasswordBlocklist, CreateChallengeInput, CreatePasswordUserInput,
+    CreateSessionInput, CreateVerifiedEmailUserInput, EmailAddress, FindEmailByCanonicalInput,
     GetChallengeInput, GetPasswordCredentialInput, GetSessionInput, HmacSecretKey,
     IncrementRateLimitInput, InsertPasswordInput, MarkEmailVerifiedInput, PasswordBlocklist,
     PasswordCredentialRecord, RedirectPath, RetryBudget, RevokeSessionInput,
@@ -104,39 +104,24 @@ where
             .hash_password(&input.password, &self.password_blocklist, &self.generator)
             .map_err(|_error| AuthError::new(AuthErrorCode::InvalidCredentials))?;
 
-        let user = self
+        let created = self
             .store
-            .create_user(CreateUserInput {
-                id: user_id.clone(),
-                now,
-            })
-            .await
-            .map_err(AuthError::from)?;
-        let email_record = self
-            .store
-            .create_user_email(CreateUserEmailInput {
-                id: email_id,
-                user_id: user_id.clone(),
+            .create_password_user(CreatePasswordUserInput {
+                user_id,
+                email_id,
                 email_original: email.original().to_owned(),
                 email_canonical: email.canonical().clone(),
-                is_primary: true,
-                now,
-            })
-            .await
-            .map_err(AuthError::from)?;
-        self.store
-            .upsert_password_credential(InsertPasswordInput {
-                user_id,
                 password_hash,
                 password_set_at: now,
                 password_version: 1,
+                now,
             })
             .await
             .map_err(AuthError::from)?;
 
         Ok(PasswordSignUpOutput {
-            user,
-            email: email_record,
+            user: created.user,
+            email: created.email,
         })
     }
 
@@ -519,14 +504,6 @@ where
         &self,
         input: ResetPasswordInput,
     ) -> Result<ResetPasswordOutput, AuthError> {
-        let password_hash = self
-            .password_hasher
-            .hash_password(
-                &input.new_password,
-                &self.password_blocklist,
-                &self.generator,
-            )
-            .map_err(|_error| AuthError::new(AuthErrorCode::InvalidCredentials))?;
         let verified = self
             .verify_email_challenge(VerifyChallengeInput {
                 challenge_id: input.challenge_id,
@@ -552,6 +529,14 @@ where
             })?,
             None => return Err(AuthError::new(AuthErrorCode::InvalidCredentials)),
         };
+        let password_hash = self
+            .password_hasher
+            .hash_password(
+                &input.new_password,
+                &self.password_blocklist,
+                &self.generator,
+            )
+            .map_err(|_error| AuthError::new(AuthErrorCode::InvalidCredentials))?;
         let now = self.clock.now();
         let credential = self
             .store
@@ -611,31 +596,17 @@ where
         let email_id = new_user_email_id(&self.generator)
             .map_err(|_error| AuthError::with_detail(AuthErrorCode::Internal, "email_id"))?;
         self.store
-            .create_user(CreateUserInput {
-                id: user_id.clone(),
-                now,
-            })
-            .await
-            .map_err(AuthError::from)?;
-        self.store
-            .create_user_email(CreateUserEmailInput {
-                id: email_id,
+            .create_verified_email_user(CreateVerifiedEmailUserInput {
                 user_id,
                 email_original: email_canonical.as_str().to_owned(),
-                email_canonical: email_canonical.clone(),
-                is_primary: true,
+                email_id,
+                email_canonical,
+                verified_at: now,
                 now,
             })
             .await
-            .map_err(AuthError::from)?;
-        self.store
-            .mark_email_verified(MarkEmailVerifiedInput {
-                email_canonical,
-                verified_at: now,
-            })
-            .await
-            .map_err(AuthError::from)?
-            .ok_or_else(|| AuthError::new(AuthErrorCode::InvalidCredentials))
+            .map_err(AuthError::from)
+            .map(|created| created.email)
     }
 
     async fn create_session_for_user(

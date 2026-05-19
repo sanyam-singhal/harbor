@@ -268,8 +268,8 @@ impl DefaultAuthEmailRenderer {
     ) -> Result<Self, MailError> {
         let product_name = product_name.into();
         let site_name = site_name.into();
-        validate_rendered_email_field(&product_name, "product_name")?;
-        validate_rendered_email_field(&site_name, "site_name")?;
+        validate_rendered_email_label(&product_name, "product_name")?;
+        validate_rendered_email_label(&site_name, "site_name")?;
         Ok(Self {
             product_name,
             site_name,
@@ -391,17 +391,6 @@ impl DefaultAuthEmailRenderer {
 pub struct MailDelivery {
     /// Provider message id, when the provider returns one.
     pub provider_message_id: Option<String>,
-}
-
-/// Renders an auth challenge email.
-///
-/// # Errors
-///
-/// Returns [`MailError`] when the requested delivery style is missing its
-/// required secret material.
-pub fn render_challenge_email(input: ChallengeEmailInput) -> Result<AuthEmail, MailError> {
-    let renderer = DefaultAuthEmailRenderer::new("Harbor", "your application")?;
-    renderer.render_challenge_email(input)
 }
 
 /// Renders an auth challenge email using a caller-provided Rust renderer.
@@ -675,7 +664,7 @@ fn bounded_auth_email(
     text_body: String,
     html_body: Option<String>,
 ) -> Result<AuthEmail, MailError> {
-    validate_rendered_email_field(&subject, "subject")?;
+    validate_rendered_email_label(&subject, "subject")?;
     validate_rendered_email_field(&text_body, "text_body")?;
     if let Some(html_body) = html_body.as_ref() {
         validate_rendered_email_field(html_body, "html_body")?;
@@ -701,6 +690,14 @@ fn validate_rendered_email_field(value: &str, detail: &'static str) -> Result<()
         .chars()
         .any(|character| character.is_control() && character != '\n')
     {
+        return Err(MailError::with_detail(MailErrorCode::InvalidConfig, detail));
+    }
+    Ok(())
+}
+
+fn validate_rendered_email_label(value: &str, detail: &'static str) -> Result<(), MailError> {
+    validate_rendered_email_field(value, detail)?;
+    if value.chars().any(char::is_control) {
         return Err(MailError::with_detail(MailErrorCode::InvalidConfig, detail));
     }
     Ok(())

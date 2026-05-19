@@ -47,13 +47,19 @@ scripts/check.sh
 Run the deterministic demo smoke without live email:
 
 ```sh
-HARBOR_HEADLESS_DEMO_SMOKE=1 cargo run -p harbor-headless-demo
+HARBOR_PRODUCT_NAME=Harbor \
+HARBOR_HMAC_KEY=local-recording-smoke-key-at-least-32b \
+HARBOR_HEADLESS_DEMO_SMOKE=1 \
+cargo run -p harbor-headless-demo
 ```
 
 Run the browser smoke server with recording email shortcuts:
 
 ```sh
-HARBOR_HEADLESS_DEMO_BROWSER_SMOKE=1 cargo run -p harbor-headless-demo
+HARBOR_PRODUCT_NAME=Harbor \
+HARBOR_HMAC_KEY=local-browser-smoke-key-at-least-32b \
+HARBOR_HEADLESS_DEMO_BROWSER_SMOKE=1 \
+cargo run -p harbor-headless-demo
 ```
 
 Enable live Resend delivery only when explicitly dogfooding against a verified
@@ -61,6 +67,7 @@ sender:
 
 ```sh
 HARBOR_EMAIL_MODE=resend \
+HARBOR_PRODUCT_NAME=Harbor \
 HARBOR_HEADLESS_DEMO_SMOKE=1 \
 RESEND_API_KEY="$RESEND_API_KEY" \
 HARBOR_EMAIL_FROM="Harbor <auth@issuecertificate.com>" \

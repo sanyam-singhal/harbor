@@ -65,8 +65,10 @@ async fn test_parts_with_rate_limits(
         Some(rate_limits) => builder.with_rate_limits(rate_limits)?,
         None => builder,
     };
-    let harbor = builder.finish()?;
-    let csrf = issue_csrf_token(&SystemSecretGenerator)?;
+    let harbor = builder
+        .with_default_email_renderer("TestAuth", "test.local")?
+        .finish()?;
+    let csrf = issue_csrf_token(harbor.config(), &SystemSecretGenerator)?;
     let csrf_cookie = build_csrf_cookie(harbor.config().cookie_defaults(), &csrf, None)?;
     let csrf_pair = first_cookie_pair(&csrf_cookie)?.to_owned();
     let request = CsrfRequest {

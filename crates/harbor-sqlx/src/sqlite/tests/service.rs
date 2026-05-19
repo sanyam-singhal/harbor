@@ -118,6 +118,45 @@ async fn service_negative_paths_are_enumeration_safe() -> Result<(), Box<dyn std
     };
     assert_eq!(unknown_signin.code(), AuthErrorCode::InvalidCredentials);
 
+    let empty_rate_key = service
+        .enforce_rate_limit(harbor_core::RateLimitInput {
+            scope: harbor_core::AuthRateLimitScope::EmailChallenge,
+            key: String::new(),
+            max_count: RetryBudget::ONE,
+            window: UnixTimestampMicros::try_new(60_000_000)?,
+        })
+        .await;
+    assert_eq!(
+        empty_rate_key.map_err(|error| error.code()),
+        Err(AuthErrorCode::InvalidCredentials)
+    );
+
+    let control_rate_key = service
+        .enforce_rate_limit(harbor_core::RateLimitInput {
+            scope: harbor_core::AuthRateLimitScope::EmailChallenge,
+            key: "bad\nkey".to_owned(),
+            max_count: RetryBudget::ONE,
+            window: UnixTimestampMicros::try_new(60_000_000)?,
+        })
+        .await;
+    assert_eq!(
+        control_rate_key.map_err(|error| error.code()),
+        Err(AuthErrorCode::InvalidCredentials)
+    );
+
+    let zero_window = service
+        .enforce_rate_limit(harbor_core::RateLimitInput {
+            scope: harbor_core::AuthRateLimitScope::EmailChallenge,
+            key: "client".to_owned(),
+            max_count: RetryBudget::ONE,
+            window: UnixTimestampMicros::EPOCH,
+        })
+        .await;
+    assert_eq!(
+        zero_window.map_err(|error| error.code()),
+        Err(AuthErrorCode::Internal)
+    );
+
     let missing_session = SecretToken::try_new("missing-session-token")?;
     assert_eq!(service.current_session(&missing_session).await?, None);
     assert!(!service.sign_out(&missing_session).await?);
@@ -254,6 +293,45 @@ async fn service_negative_paths_are_enumeration_safe() -> Result<(), Box<dyn std
         Err(error) => error,
     };
     assert_eq!(no_user_reset.code(), AuthErrorCode::InvalidCredentials);
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn duplicate_password_signup_does_not_leave_partial_user()
+-> Result<(), Box<dyn std::error::Error>> {
+    let store = migrated_store().await?;
+    let service = test_service(store.clone())?;
+    let input = harbor_core::PasswordSignUpInput {
+        email: "duplicate-signup@example.com".to_owned(),
+        password: "correct horse battery staple".to_owned(),
+    };
+
+    service.sign_up_with_password(input.clone()).await?;
+    let duplicate = service.sign_up_with_password(input).await;
+
+    let duplicate = match duplicate {
+        Ok(_) => return Err("duplicate signup should fail".into()),
+        Err(error) => error,
+    };
+    assert_eq!(duplicate.code(), AuthErrorCode::Store);
+
+    let user_count: i64 = sqlx::query("SELECT COUNT(*) AS count FROM harbor_users")
+        .fetch_one(store.pool())
+        .await?
+        .try_get("count")?;
+    let email_count: i64 = sqlx::query("SELECT COUNT(*) AS count FROM harbor_user_emails")
+        .fetch_one(store.pool())
+        .await?
+        .try_get("count")?;
+    let password_count: i64 =
+        sqlx::query("SELECT COUNT(*) AS count FROM harbor_password_credentials")
+            .fetch_one(store.pool())
+            .await?
+            .try_get("count")?;
+
+    assert_eq!(user_count, 1);
+    assert_eq!(email_count, 1);
+    assert_eq!(password_count, 1);
     Ok(())
 }
 

@@ -2,12 +2,12 @@
 
 use harbor_core::{
     AppendAuthEventInput, AuthEventKind, AuthStore, ChallengeDelivery, ChallengePurpose,
-    CreateChallengeInput, CreateSessionInput, CreateUserEmailInput, CreateUserInput,
-    DeleteExpiredSessionsInput, EmailAddress, FindEmailByCanonicalInput, GetChallengeInput,
-    GetSessionInput, GetUserInput, IncrementChallengeAttemptsInput, IncrementRateLimitInput,
-    InsertPasswordInput, PasswordHashString, RedirectPath, RetryBudget, RevokeSessionInput,
-    RevokeUserSessionsInput, StoreErrorCode, TokenHash, UnixTimestampMicros,
-    UpdateSessionLastSeenInput,
+    CreateChallengeInput, CreatePasswordUserInput, CreateSessionInput, CreateUserEmailInput,
+    CreateUserInput, CreateVerifiedEmailUserInput, DeleteExpiredSessionsInput, EmailAddress,
+    FindEmailByCanonicalInput, GetChallengeInput, GetPasswordCredentialInput, GetSessionInput,
+    GetUserInput, IncrementChallengeAttemptsInput, IncrementRateLimitInput, InsertPasswordInput,
+    PasswordHashString, RedirectPath, RetryBudget, RevokeSessionInput, RevokeUserSessionsInput,
+    StoreErrorCode, TokenHash, UnixTimestampMicros, UpdateSessionLastSeenInput,
 };
 
 use crate::TestIdFactory;
@@ -23,11 +23,104 @@ pub async fn run_auth_store_contracts<S>(store: S) -> Result<(), Box<dyn std::er
 where
     S: AuthStore,
 {
+    atomic_password_user_contract(store.clone()).await?;
     user_email_and_password_contract(store.clone()).await?;
     challenge_contract(store.clone()).await?;
     session_contract(store.clone()).await?;
     session_cleanup_boundary_contract(store.clone()).await?;
     rate_limit_and_event_contract(store).await?;
+    Ok(())
+}
+
+async fn atomic_password_user_contract<S>(store: S) -> Result<(), Box<dyn std::error::Error>>
+where
+    S: AuthStore,
+{
+    let mut ids = TestIdFactory::with_start("contract-account", 500);
+    let email = EmailAddress::parse("atomic-account@example.com")?;
+    let user_id = ids.user_id()?;
+
+    let created = store
+        .create_password_user(CreatePasswordUserInput {
+            user_id: user_id.clone(),
+            email_id: ids.user_email_id()?,
+            email_original: email.original().to_owned(),
+            email_canonical: email.canonical().clone(),
+            password_hash: PasswordHashString::try_new(PHC)?,
+            password_set_at: now(),
+            password_version: 1,
+            now: now(),
+        })
+        .await?;
+    assert_eq!(created.user.id, user_id);
+    assert_eq!(created.email.email_canonical, *email.canonical());
+    assert_eq!(created.credential.password_version, 1);
+
+    let conflicting_user = ids.user_id()?;
+    let duplicate = store
+        .create_password_user(CreatePasswordUserInput {
+            user_id: conflicting_user.clone(),
+            email_id: ids.user_email_id()?,
+            email_original: email.original().to_owned(),
+            email_canonical: email.canonical().clone(),
+            password_hash: PasswordHashString::try_new(PHC)?,
+            password_set_at: now(),
+            password_version: 1,
+            now: now(),
+        })
+        .await;
+    let duplicate = match duplicate {
+        Ok(_) => return Err("duplicate account email should fail atomically".into()),
+        Err(error) => error,
+    };
+    assert_eq!(duplicate.code(), StoreErrorCode::Conflict);
+
+    let partial_user = store
+        .get_user(GetUserInput {
+            user_id: conflicting_user,
+        })
+        .await?;
+    assert_eq!(partial_user, None);
+
+    let email = EmailAddress::parse("atomic-email-only@example.com")?;
+    let user_id = ids.user_id()?;
+    let created = store
+        .create_verified_email_user(CreateVerifiedEmailUserInput {
+            user_id: user_id.clone(),
+            email_id: ids.user_email_id()?,
+            email_original: email.original().to_owned(),
+            email_canonical: email.canonical().clone(),
+            verified_at: now(),
+            now: now(),
+        })
+        .await?;
+    assert_eq!(created.user.id, user_id);
+    assert_eq!(created.email.email_canonical, *email.canonical());
+    assert_eq!(created.email.verified_at, Some(now()));
+
+    let conflicting_user = ids.user_id()?;
+    let duplicate = store
+        .create_verified_email_user(CreateVerifiedEmailUserInput {
+            user_id: conflicting_user.clone(),
+            email_id: ids.user_email_id()?,
+            email_original: email.original().to_owned(),
+            email_canonical: email.canonical().clone(),
+            verified_at: now(),
+            now: now(),
+        })
+        .await;
+    let duplicate = match duplicate {
+        Ok(_) => return Err("duplicate verified email account should fail atomically".into()),
+        Err(error) => error,
+    };
+    assert_eq!(duplicate.code(), StoreErrorCode::Conflict);
+
+    let partial_user = store
+        .get_user(GetUserInput {
+            user_id: conflicting_user,
+        })
+        .await?;
+    assert_eq!(partial_user, None);
     Ok(())
 }
 
@@ -113,7 +206,7 @@ where
         })
         .await?;
     let fetched = store
-        .get_password_credential(harbor_core::GetPasswordCredentialInput { user_id })
+        .get_password_credential(GetPasswordCredentialInput { user_id })
         .await?;
     assert!(fetched.is_some());
 

@@ -18,9 +18,9 @@ code changes or secret leakage.
 | --- | --- | --- | --- |
 | `HARBOR_DATABASE_URL` | no | `sqlite://harbor-headless-demo.sqlite?mode=rwc` | Use `sqlite:///var/lib/harbor/harbor.sqlite?mode=rwc` on the VPS. |
 | `HARBOR_PUBLIC_BASE_URL` | no | `http://localhost:3000` | Use the verified HTTPS origin for live links. |
-| `HARBOR_PRODUCT_NAME` | no | `Harbor` | Product name used by the demo's default Rust email renderer. |
+| `HARBOR_PRODUCT_NAME` | yes | none | Product name passed explicitly to the demo's default Rust email renderer. |
 | `HARBOR_EMAIL_SITE_NAME` | no | host from `HARBOR_PUBLIC_BASE_URL` | Site label used by the demo's default Rust email renderer. |
-| `HARBOR_HMAC_KEY` | live yes | local fixed demo key | Must be at least 32 bytes and stable across restarts. |
+| `HARBOR_HMAC_KEY` | yes | none | Must be at least 32 bytes and stable across restarts. |
 | `HARBOR_EMAIL_MODE` | no | `recording` | Accepts `recording`, `log`, or `resend`. |
 | `RESEND_API_KEY` | resend yes | none | Read only by `ResendMailer::from_env`. |
 | `HARBOR_EMAIL_FROM` | resend yes | none | Must be a verified Resend sender. |
@@ -103,7 +103,7 @@ let harbor = Harbor::builder()
 global auth server:
 
 - validated `Harbor` builder and Leptos context helpers;
-- CSRF issue/validate helpers using double-submit cookies;
+- CSRF issue/validate helpers using HMAC-signed double-submit cookies;
 - HttpOnly session cookie builders with production and development defaults;
 - generic async workflow functions for signup, signin, email code/link signin,
   password reset, current session, and signout;
@@ -124,7 +124,7 @@ islands that render around server-owned auth state.
   session cookie, path `/`, and explicit `SameSite=Lax`.
 - Development cookies disable `Secure` for `localhost` only.
 - CSRF-protected state-changing workflows validate the configured CSRF header
-  against the CSRF cookie.
+  against the CSRF cookie and require a valid HMAC signature.
 - Password reset revokes existing sessions and does not create a new session.
 - Magic links and OTP codes prove inbox possession only; they are not phishing
   resistant and are documented as lower assurance than hardware-backed MFA.
@@ -139,7 +139,7 @@ islands that render around server-owned auth state.
 - No MFA or phishing-resistant authentication claim.
 - No production-grade account administration UI.
 - No PostgreSQL or MySQL adapter yet, though the store traits and shared
-  contract tests are written for future adapters.
+  contract tests are written as the acceptance suite for future adapters.
 - No dependency-free email provider abstraction for live delivery; Resend is
   the only live provider in v0.1 and remains behind an explicit feature.
 

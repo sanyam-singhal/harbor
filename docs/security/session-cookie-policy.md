@@ -36,7 +36,9 @@ all prefix requirements are satisfied.
 ## CSRF
 
 SameSite is defense in depth, not the only CSRF defense. Harbor v0.1 forms must
-use a CSRF token strategy for state-changing requests.
+use HMAC-signed double-submit CSRF tokens for state-changing requests. The
+submitted form token must match the CSRF cookie value and the token signature
+must validate with the configured Harbor HMAC key.
 
 Source: https://cheatsheetseries.owasp.org/cheatsheets/Cross-Site_Request_Forgery_Prevention_Cheat_Sheet.html
 
