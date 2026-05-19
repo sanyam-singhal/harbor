@@ -720,7 +720,9 @@ pub(crate) fn latest_link_query(
     parse_link_query(link)
 }
 
-fn latest_otp_code(mailer: &RecordingMailer) -> Result<String, Box<dyn std::error::Error>> {
+pub(crate) fn latest_otp_code(
+    mailer: &RecordingMailer,
+) -> Result<String, Box<dyn std::error::Error>> {
     let recorded = mailer.recorded()?;
     let email = match recorded.last() {
         Some(email) => email,

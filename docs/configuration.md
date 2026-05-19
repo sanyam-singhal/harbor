@@ -22,6 +22,7 @@ changes or secret leakage.
 | `HARBOR_EMAIL_MODE` | no | `recording` | Accepts `recording`, `log`, or `resend`. |
 | `RESEND_API_KEY` | resend yes | none | Read only by `ResendMailer::from_env`. |
 | `HARBOR_EMAIL_FROM` | resend no | `Harbor <auth@issuecertificate.com>` | Must be a verified Resend sender. |
+| `HARBOR_DEMO_SMOKE_EMAIL` | no | generated `@example.com` address | Use a real inbox when validating live Resend delivery. The smoke runner adds a unique `+harbor...` tag per run. |
 | `HARBOR_DEMO_SMOKE` | no | `false` | Runs deterministic end-to-end auth flow and exits. |
 | `HARBOR_DEMO_BROWSER_SMOKE` | no | `false` | Starts the local browser smoke server. |
 | `HARBOR_DEMO_ADDR` | no | `127.0.0.1:3000` | Bind address for the browser smoke server. |

@@ -16,7 +16,8 @@ use harbor_sqlx::{SqliteAuthStore, SqliteStoreOptions};
 mod browser;
 
 use browser::{
-    assert_current_session, first_cookie_pair, latest_link_query, run_browser_smoke_server,
+    assert_current_session, first_cookie_pair, latest_link_query, latest_otp_code,
+    run_browser_smoke_server,
 };
 
 const DEFAULT_DATABASE_URL: &str = "sqlite://harbor-demo.sqlite?mode=rwc";
@@ -58,6 +59,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             recording_mailer.clone(),
             harbor.config(),
             settings.hmac_key.clone(),
+            settings.smoke_email.clone(),
         )
         .await?;
         println!("Demo auth smoke: ok");
@@ -81,6 +83,7 @@ struct DemoSettings {
     public_base_url: String,
     hmac_key: Vec<u8>,
     email_mode: DemoEmailMode,
+    smoke_email: Option<String>,
     run_smoke: bool,
     run_browser_smoke: bool,
     demo_addr: String,
@@ -97,6 +100,7 @@ impl DemoSettings {
                 .map(|value| value.into_bytes())
                 .unwrap_or_else(|_error| vec![42; 32]),
             email_mode: DemoEmailMode::from_env()?,
+            smoke_email: env::var("HARBOR_DEMO_SMOKE_EMAIL").ok(),
             run_smoke: env::var("HARBOR_DEMO_SMOKE")
                 .map(|value| value == "1" || value == "true")
                 .unwrap_or(false),
@@ -213,6 +217,7 @@ async fn run_recording_smoke(
     recording_mailer: RecordingMailer,
     config: &harbor_leptos::HarborConfig,
     hmac_key: Vec<u8>,
+    smoke_email: Option<String>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let service = auth_service(store, hmac_key)?;
     let csrf = issue_csrf_token(&SystemSecretGenerator)?;
@@ -223,7 +228,7 @@ async fn run_recording_smoke(
         csrf_header: Some(csrf.expose_secret().to_owned()),
         rate_limit_key: None,
     };
-    let email = format!("demo-{}@example.com", SystemClock.now().as_i64());
+    let email = smoke_email_for_run(smoke_email, SystemClock.now().as_i64())?;
     let password = "correct horse battery staple".to_owned();
 
     harbor_leptos::signup_with_password(
@@ -272,6 +277,29 @@ async fn run_recording_smoke(
     };
     assert_current_session(&service, config, email_session_pair).await?;
 
+    let code = harbor_leptos::request_email_code_signin(
+        &service,
+        &mailer,
+        config,
+        csrf_request.clone(),
+        email.clone(),
+        Some(RedirectPath::try_new("/account")?),
+    )
+    .await?;
+    let code_signin = harbor_leptos::verify_email_code(
+        &service,
+        config,
+        csrf_request.clone(),
+        harbor_core::EmailChallengeSignInInput {
+            challenge_id: code.challenge_id,
+            secret: SecretToken::try_new(latest_otp_code(&recording_mailer)?)?,
+            redirect_path: Some(RedirectPath::try_new("/account")?),
+        },
+    )
+    .await?;
+    let code_session_pair = first_cookie_pair(&code_signin.set_cookie)?;
+    assert_current_session(&service, config, code_session_pair).await?;
+
     harbor_leptos::request_password_reset(
         &service,
         &mailer,
@@ -298,6 +326,22 @@ async fn run_recording_smoke(
     .await?;
     harbor_leptos::sign_out(&service, config, csrf_request).await?;
     Ok(())
+}
+
+fn smoke_email_for_run(
+    smoke_email: Option<String>,
+    timestamp_micros: i64,
+) -> Result<String, Box<dyn std::error::Error>> {
+    let Some(email) = smoke_email else {
+        return Ok(format!("demo-{timestamp_micros}@example.com"));
+    };
+    let Some((local, domain)) = email.split_once('@') else {
+        return Err("HARBOR_DEMO_SMOKE_EMAIL must contain exactly one @".into());
+    };
+    if local.is_empty() || domain.is_empty() || domain.contains('@') {
+        return Err("HARBOR_DEMO_SMOKE_EMAIL must be a valid email-like address".into());
+    }
+    Ok(format!("{local}+harbor{timestamp_micros}@{domain}"))
 }
 
 fn auth_service(
