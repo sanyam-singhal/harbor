@@ -1,141 +1,27 @@
+//! SQLite store integration tests.
+
+mod support;
+
 use harbor_core::{
-    AppendAuthEventInput, AuthErrorCode, AuthEventId, AuthEventKind, AuthEventStore, AuthService,
+    AppendAuthEventInput, AuthErrorCode, AuthEventId, AuthEventKind, AuthEventStore,
     ChallengeDelivery, ChallengeId, ChallengePurpose, ChallengeStore, CreateChallengeInput,
     CreateSessionInput, CreateUserEmailInput, CreateUserInput, DeleteExpiredSessionsInput,
     EmailAddress, FindEmailByCanonicalInput, GetChallengeInput, GetPasswordCredentialInput,
-    GetSessionInput, GetUserInput, HmacSecretKey, IncrementChallengeAttemptsInput,
-    IncrementRateLimitInput, InsertPasswordInput, MarkEmailVerifiedInput, PasswordCredentialStore,
-    PasswordHashString, RandomError, RateLimitStore, RedirectPath, RetryBudget, RevokeSessionInput,
-    RevokeUserSessionsInput, SecretGenerator, SecretHashPurpose, SecretToken, SessionId,
-    SessionStore, StoreErrorCode, TokenHash, UnixTimestampMicros, UpdateSessionLastSeenInput,
-    UserEmailId, UserEmailStore, UserId, UserStore, hash_secret_token,
+    GetSessionInput, GetUserInput, IncrementChallengeAttemptsInput, IncrementRateLimitInput,
+    InsertPasswordInput, MarkEmailVerifiedInput, PasswordCredentialStore, PasswordHashString,
+    RateLimitStore, RedirectPath, RetryBudget, RevokeSessionInput, RevokeUserSessionsInput,
+    SessionId, SessionStore, StoreErrorCode, UnixTimestampMicros, UpdateSessionLastSeenInput,
+    UserEmailId, UserEmailStore, UserStore,
 };
-use harbor_test_support::{FixedClock, TempSqliteDatabase, TestAuthServiceBuilder};
+use harbor_sqlx::{SqliteAuthStore, SqliteStoreOptions};
+use harbor_test_support::TempSqliteDatabase;
 use sqlx::Row;
 use sqlx::sqlite::SqlitePoolOptions;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
-
-use super::{SqliteAuthStore, SqliteStoreOptions};
-
-mod service;
-
-const PHC: &str = "$argon2id$v=19$m=32,t=1,p=1$AAECAwQFBgcICQoLDA0ODw$e9Q8Zc8mW2hS9UG+4XH15Q";
-const ABSOLUTE_SESSION_MICROS: i64 = 30 * 24 * 60 * 60 * 1_000_000;
-
-async fn migrated_store() -> Result<SqliteAuthStore, Box<dyn std::error::Error>> {
-    Ok(
-        SqliteAuthStore::connect_and_migrate("sqlite::memory:", SqliteStoreOptions::in_memory())
-            .await?,
-    )
-}
-
-fn test_service(
-    store: SqliteAuthStore,
-) -> Result<
-    harbor_test_support::DeterministicAuthService<SqliteAuthStore>,
-    Box<dyn std::error::Error>,
-> {
-    test_service_at(store, now())
-}
-
-fn test_service_at(
-    store: SqliteAuthStore,
-    now: UnixTimestampMicros,
-) -> Result<
-    harbor_test_support::DeterministicAuthService<SqliteAuthStore>,
-    Box<dyn std::error::Error>,
-> {
-    Ok(TestAuthServiceBuilder::new(store).with_now(now).finish()?)
-}
-
-fn test_service_with_key_at(
-    store: SqliteAuthStore,
-    hmac_key: &HmacSecretKey,
-    now: UnixTimestampMicros,
-) -> Result<
-    harbor_test_support::DeterministicAuthService<SqliteAuthStore>,
-    Box<dyn std::error::Error>,
-> {
-    Ok(TestAuthServiceBuilder::new(store)
-        .with_now(now)
-        .with_hmac_key(hmac_key.expose_secret().to_vec())
-        .finish()?)
-}
-
-fn test_service_with_generator<G>(
-    store: SqliteAuthStore,
-    generator: G,
-) -> Result<AuthService<SqliteAuthStore, FixedClock, G>, Box<dyn std::error::Error>>
-where
-    G: SecretGenerator,
-{
-    Ok(TestAuthServiceBuilder::new(store)
-        .with_generator(generator)
-        .finish()?)
-}
-
-fn user_id() -> Result<UserId, harbor_core::DomainError> {
-    UserId::try_new("user000000000001")
-}
-
-fn email_id() -> Result<UserEmailId, harbor_core::DomainError> {
-    UserEmailId::try_new("email00000000001")
-}
-
-fn now() -> UnixTimestampMicros {
-    UnixTimestampMicros::EPOCH
-}
-
-fn challenge_id() -> Result<ChallengeId, harbor_core::DomainError> {
-    ChallengeId::try_new("challenge00000001")
-}
-
-fn token_hash() -> Result<TokenHash, harbor_core::DomainError> {
-    TokenHash::try_new(vec![1, 2, 3, 4])
-}
-
-fn second_token_hash() -> Result<TokenHash, harbor_core::DomainError> {
-    TokenHash::try_new(vec![5, 6, 7, 8])
-}
-
-fn session_id() -> Result<SessionId, harbor_core::DomainError> {
-    SessionId::try_new("session000000001")
-}
-
-#[derive(Clone)]
-struct FailingSecretGenerator;
-
-impl SecretGenerator for FailingSecretGenerator {
-    fn fill_bytes(&self, _dest: &mut [u8]) -> Result<(), RandomError> {
-        Err(RandomError::SystemRandom)
-    }
-}
-
-#[derive(Clone)]
-struct FailAfterFirstSecretGenerator {
-    calls: Arc<AtomicUsize>,
-}
-
-impl FailAfterFirstSecretGenerator {
-    fn new() -> Self {
-        Self {
-            calls: Arc::new(AtomicUsize::new(0)),
-        }
-    }
-}
-
-impl SecretGenerator for FailAfterFirstSecretGenerator {
-    fn fill_bytes(&self, dest: &mut [u8]) -> Result<(), RandomError> {
-        if self.calls.fetch_add(1, Ordering::Relaxed) == 0 {
-            dest.fill(0xab);
-            Ok(())
-        } else {
-            Err(RandomError::SystemRandom)
-        }
-    }
-}
+use support::{
+    PHC, challenge_id, email_id, migrated_store, now, second_token_hash, session_id, test_service,
+    token_hash, user_id,
+};
 
 #[tokio::test(flavor = "current_thread")]
 async fn connects_migrates_and_checks_foreign_keys() -> Result<(), Box<dyn std::error::Error>> {
@@ -212,110 +98,18 @@ async fn connection_options_cover_custom_and_default_paths()
     assert_eq!(custom.busy_timeout(), Duration::from_millis(250));
     let store = SqliteAuthStore::connect("sqlite::memory:", custom).await?;
     sqlx::query("SELECT 1").execute(store.pool()).await?;
+
+    let invalid = SqliteAuthStore::connect(
+        "sqlite::memory:",
+        SqliteStoreOptions::new(0, Duration::from_millis(250), true, false),
+    )
+    .await;
+    let invalid = match invalid {
+        Ok(_) => return Err("zero sqlite max_connections should fail".into()),
+        Err(error) => error,
+    };
+    assert_eq!(invalid.code(), StoreErrorCode::Unavailable);
     Ok(())
-}
-
-#[test]
-fn sqlite_codecs_and_error_mapping_cover_corrupt_edges() {
-    assert_eq!(
-        super::challenge_purpose_from_db("signup_confirmation"),
-        Ok(ChallengePurpose::SignupConfirmation)
-    );
-    assert_eq!(
-        super::challenge_purpose_from_db("email_sign_in"),
-        Ok(ChallengePurpose::EmailSignIn)
-    );
-    assert_eq!(
-        super::challenge_purpose_from_db("password_reset"),
-        Ok(ChallengePurpose::PasswordReset)
-    );
-    assert_eq!(
-        super::challenge_purpose_from_db("bogus").map_err(|error| error.code()),
-        Err(StoreErrorCode::CorruptData)
-    );
-    assert_eq!(
-        super::challenge_delivery_from_db("magic_link"),
-        Ok(ChallengeDelivery::MagicLink)
-    );
-    assert_eq!(
-        super::challenge_delivery_from_db("otp_code"),
-        Ok(ChallengeDelivery::OtpCode)
-    );
-    assert_eq!(
-        super::challenge_delivery_from_db("both"),
-        Ok(ChallengeDelivery::Both)
-    );
-    assert_eq!(
-        super::challenge_delivery_from_db("bogus").map_err(|error| error.code()),
-        Err(StoreErrorCode::CorruptData)
-    );
-
-    assert_eq!(
-        super::challenge_purpose_to_db(ChallengePurpose::SignupConfirmation),
-        "signup_confirmation"
-    );
-    assert_eq!(
-        super::challenge_purpose_to_db(ChallengePurpose::EmailSignIn),
-        "email_sign_in"
-    );
-    assert_eq!(
-        super::challenge_purpose_to_db(ChallengePurpose::PasswordReset),
-        "password_reset"
-    );
-    assert_eq!(
-        super::challenge_delivery_to_db(ChallengeDelivery::MagicLink),
-        "magic_link"
-    );
-    assert_eq!(
-        super::challenge_delivery_to_db(ChallengeDelivery::OtpCode),
-        "otp_code"
-    );
-    assert_eq!(
-        super::challenge_delivery_to_db(ChallengeDelivery::Both),
-        "both"
-    );
-
-    assert_eq!(
-        super::auth_event_kind_to_db(AuthEventKind::SignupRequested),
-        "signup_requested"
-    );
-    assert_eq!(
-        super::auth_event_kind_to_db(AuthEventKind::EmailVerified),
-        "email_verified"
-    );
-    assert_eq!(
-        super::auth_event_kind_to_db(AuthEventKind::SignInSucceeded),
-        "sign_in_succeeded"
-    );
-    assert_eq!(
-        super::auth_event_kind_to_db(AuthEventKind::SignInFailed),
-        "sign_in_failed"
-    );
-    assert_eq!(
-        super::auth_event_kind_to_db(AuthEventKind::PasswordResetRequested),
-        "password_reset_requested"
-    );
-    assert_eq!(
-        super::auth_event_kind_to_db(AuthEventKind::PasswordResetCompleted),
-        "password_reset_completed"
-    );
-    assert_eq!(
-        super::auth_event_kind_to_db(AuthEventKind::SessionRevoked),
-        "session_revoked"
-    );
-
-    assert_eq!(
-        super::map_domain_error(harbor_core::DomainError::Empty).code(),
-        StoreErrorCode::CorruptData
-    );
-    assert_eq!(
-        super::map_sqlx_error(sqlx::Error::ColumnNotFound("missing".to_owned()), "column").code(),
-        StoreErrorCode::CorruptData
-    );
-    assert_eq!(
-        super::map_sqlx_error(sqlx::Error::RowNotFound, "row").code(),
-        StoreErrorCode::Unavailable
-    );
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -347,6 +141,10 @@ async fn corrupted_rows_map_to_corrupt_data() -> Result<(), Box<dyn std::error::
         Err(error) => error,
     };
     assert_eq!(password.code(), StoreErrorCode::CorruptData);
+
+    sqlx::query("PRAGMA ignore_check_constraints = ON")
+        .execute(store.pool())
+        .await?;
 
     let challenge_id = ChallengeId::try_new("challenge00000999")?;
     sqlx::query(
@@ -392,6 +190,10 @@ async fn corrupted_rows_map_to_corrupt_data() -> Result<(), Box<dyn std::error::
         Err(error) => error,
     };
     assert_eq!(rate_limit.code(), StoreErrorCode::CorruptData);
+
+    sqlx::query("PRAGMA ignore_check_constraints = OFF")
+        .execute(store.pool())
+        .await?;
     Ok(())
 }
 
@@ -577,7 +379,7 @@ async fn creates_increments_and_consumes_challenge() -> Result<(), Box<dyn std::
             user_id: Some(user_id),
             email_canonical: email.canonical().clone(),
             secret_hash: token_hash()?,
-            delivery: ChallengeDelivery::Both,
+            delivery: ChallengeDelivery::MagicLink,
             redirect_path: Some(RedirectPath::try_new("/account")?),
             expires_at,
             max_attempts: RetryBudget::try_new(5)?,

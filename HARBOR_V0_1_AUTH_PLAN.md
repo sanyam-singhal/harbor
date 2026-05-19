@@ -313,7 +313,7 @@ Challenge fields:
 - `user_id` nullable
 - `email_canonical`
 - `secret_hash`
-- `secret_delivery` enum: `MagicLink`, `OtpCode`, or `Both`
+- `secret_delivery` enum: `MagicLink` or `OtpCode`
 - `expires_at`
 - `consumed_at`
 - `attempt_count`
@@ -1115,7 +1115,9 @@ Extraction rule:
    non-`__Host-` dev cookie name? Current plan: support both with loud config.
 4. Should v0.1 expose both magic link and numeric OTP in the public API, or use
    one "email challenge" API that applications render either way? Current plan:
-   one challenge engine, both public components.
+   one challenge engine with separate magic-link and OTP pathways. A combined
+   link+OTP challenge is deferred until the schema can store independent secret
+   material for each verifier.
 5. Should Resend be implemented through `resend-rs`, or through a tiny direct
    REST client if the SDK dependency tree is too large? Current plan: try
    official SDK behind a feature, inspect `cargo tree`, then decide.

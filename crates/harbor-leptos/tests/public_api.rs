@@ -1,30 +1,34 @@
-use harbor_core::{AuthErrorCode, MailError, PasswordPolicy, RetryBudget, SecretToken};
+//! Public API integration tests for `harbor-leptos`.
+
+use harbor_core::{
+    AuthErrorCode, MailError, PasswordPolicy, RetryBudget, SecretToken, UnixTimestampMicros,
+};
 use harbor_email::{
     AuthEmail, AuthEmailRenderer, ChallengeEmailInput, EmailRecipient, RecordingMailer, SecretUrl,
 };
+use harbor_leptos::{
+    AuthRateLimits, ChallengeLifetimes, CookieDefaults, CookieName, Harbor, HeaderName,
+    PublicBaseUrl, SameSite, build_csrf_cookie, build_delete_csrf_cookie,
+    build_delete_session_cookie, build_session_cookie, expect_harbor_context, issue_csrf_token,
+    parse_cookie_value, provide_harbor_context, use_harbor_context, validate_csrf_from_headers,
+    validate_csrf_tokens,
+};
 use harbor_test_support::DeterministicSecretGenerator;
 use leptos::prelude::Owner;
-
-use super::{
-    CookieDefaults, CookieName, Harbor, HeaderName, PublicBaseUrl, SameSite, UnixTimestampMicros,
-    build_csrf_cookie, build_delete_csrf_cookie, build_delete_session_cookie, build_session_cookie,
-    expect_harbor_context, parse_cookie_value, provide_harbor_context, use_harbor_context,
-    validate_csrf_from_headers, validate_csrf_tokens,
-};
 
 #[derive(Debug)]
 struct TestRenderer;
 
 impl AuthEmailRenderer for TestRenderer {
     fn render_challenge_email(&self, input: ChallengeEmailInput) -> Result<AuthEmail, MailError> {
-        Ok(AuthEmail::new(
+        AuthEmail::try_new(
             input.purpose,
             input.to,
             input.challenge_id,
             "Test subject".to_owned(),
             "Test body".to_owned(),
             None,
-        ))
+        )
     }
 }
 
@@ -97,7 +101,7 @@ fn cookie_policy_rejects_insecure_cross_site_and_bad_names()
 
 #[test]
 fn custom_lifetimes_reject_zero_values() -> Result<(), Box<dyn std::error::Error>> {
-    let lifetimes = super::ChallengeLifetimes {
+    let lifetimes = ChallengeLifetimes {
         signup_confirmation: UnixTimestampMicros::EPOCH,
         email_signin: UnixTimestampMicros::try_new(1)?,
         password_reset: UnixTimestampMicros::try_new(1)?,
@@ -114,12 +118,12 @@ fn custom_lifetimes_reject_zero_values() -> Result<(), Box<dyn std::error::Error
 
 #[test]
 fn custom_configuration_accessors_round_trip() -> Result<(), Box<dyn std::error::Error>> {
-    let lifetimes = super::ChallengeLifetimes {
+    let lifetimes = ChallengeLifetimes {
         signup_confirmation: UnixTimestampMicros::try_new(2_000_000)?,
         email_signin: UnixTimestampMicros::try_new(3_000_000)?,
         password_reset: UnixTimestampMicros::try_new(4_000_000)?,
     };
-    let rate_limits = super::AuthRateLimits {
+    let rate_limits = AuthRateLimits {
         signup: RetryBudget::try_new(2)?,
         password_signin: RetryBudget::try_new(3)?,
         email_challenge: RetryBudget::try_new(4)?,
@@ -219,26 +223,6 @@ fn builder_reports_each_missing_required_part() -> Result<(), Box<dyn std::error
 }
 
 #[test]
-fn cookie_defaults_validate_private_invariants() {
-    let invalid_path = CookieDefaults {
-        path: "/auth".to_owned(),
-        ..CookieDefaults::production()
-    };
-    let session_readable = CookieDefaults {
-        session_http_only: false,
-        ..CookieDefaults::production()
-    };
-    let csrf_http_only = CookieDefaults {
-        csrf_http_only: true,
-        ..CookieDefaults::production()
-    };
-
-    assert!(invalid_path.validate().is_err());
-    assert!(session_readable.validate().is_err());
-    assert!(csrf_http_only.validate().is_err());
-}
-
-#[test]
 fn header_names_are_conservative() -> Result<(), Box<dyn std::error::Error>> {
     assert!(HeaderName::try_new("").is_err());
     assert!(HeaderName::try_new("a".repeat(65)).is_err());
@@ -252,9 +236,9 @@ fn header_names_are_conservative() -> Result<(), Box<dyn std::error::Error>> {
 
 #[test]
 fn rate_limit_window_must_be_positive() -> Result<(), Box<dyn std::error::Error>> {
-    let limits = super::AuthRateLimits {
+    let limits = AuthRateLimits {
         window: UnixTimestampMicros::EPOCH,
-        ..super::AuthRateLimits::default()
+        ..AuthRateLimits::default()
     };
     let builder = Harbor::builder()
         .with_store("store")
@@ -375,19 +359,6 @@ fn cookie_headers_cover_variants_and_rejections() -> Result<(), Box<dyn std::err
     assert!(strict_header.contains("SameSite=Strict"));
     assert!(none_header.contains("SameSite=None"));
     assert!(build_session_cookie(&strict, &token, Some(-1)).is_err());
-    assert!(
-        super::build_cookie_header(strict.session_cookie_name(), "", &strict, true, None).is_err()
-    );
-    assert!(
-        super::build_cookie_header(
-            strict.session_cookie_name(),
-            "bad;token",
-            &strict,
-            true,
-            None,
-        )
-        .is_err()
-    );
     Ok(())
 }
 
@@ -400,7 +371,7 @@ fn csrf_tokens_validate_through_cookie_and_header() -> Result<(), Box<dyn std::e
         .with_hmac_secret_key(vec![7; 32])?
         .with_default_email_renderer("TestAuth", "localhost")?
         .finish()?;
-    let token = super::issue_csrf_token(harbor.config(), &DeterministicSecretGenerator::new())?;
+    let token = issue_csrf_token(harbor.config(), &DeterministicSecretGenerator::new())?;
     let csrf_cookie = build_csrf_cookie(harbor.config().cookie_defaults(), &token, None)?;
     let cookie_header = match csrf_cookie.split(';').next() {
         Some(value) => value,

@@ -1,9 +1,10 @@
-use leptos::prelude::{ElementChild, Owner};
+//! Component construction integration tests for `harbor-leptos`.
 
-use super::{
+use harbor_leptos::{
     Authenticated, EmailCodeForm, ForgotPasswordForm, ResetPasswordForm, SignOutForm, SigninForm,
     SignupForm, Unauthenticated,
 };
+use leptos::prelude::{ElementChild, Owner};
 
 #[test]
 fn form_components_construct_under_owner() {

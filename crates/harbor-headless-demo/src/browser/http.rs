@@ -5,22 +5,22 @@ use std::{
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct DemoHttpRequest {
-    pub(super) method: String,
-    pub(super) path: String,
-    pub(super) query: HashMap<String, String>,
-    pub(super) headers: HashMap<String, String>,
-    pub(super) body: String,
+pub(in crate::browser) struct DemoHttpRequest {
+    pub(in crate::browser) method: String,
+    pub(in crate::browser) path: String,
+    pub(in crate::browser) query: HashMap<String, String>,
+    pub(in crate::browser) headers: HashMap<String, String>,
+    pub(in crate::browser) body: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct DemoHttpResponse {
-    pub(super) status: u16,
-    pub(super) headers: Vec<(String, String)>,
-    pub(super) body: String,
+pub(in crate::browser) struct DemoHttpResponse {
+    pub(in crate::browser) status: u16,
+    pub(in crate::browser) headers: Vec<(String, String)>,
+    pub(in crate::browser) body: String,
 }
 
-pub(super) fn read_http_request(
+pub(in crate::browser) fn read_http_request(
     stream: &mut TcpStream,
 ) -> Result<DemoHttpRequest, Box<dyn std::error::Error>> {
     let mut bytes = Vec::new();
@@ -92,7 +92,7 @@ fn parse_target(
     Ok((path, query))
 }
 
-pub(super) fn parse_form(
+pub(in crate::browser) fn parse_form(
     body: &str,
 ) -> Result<HashMap<String, String>, Box<dyn std::error::Error>> {
     let mut values = HashMap::new();
@@ -146,7 +146,7 @@ fn hex_value(byte: u8) -> Option<u8> {
     }
 }
 
-pub(super) fn url_component(value: &str) -> String {
+pub(in crate::browser) fn url_component(value: &str) -> String {
     let mut encoded = String::new();
     for byte in value.bytes() {
         match byte {
@@ -171,7 +171,7 @@ fn hex_digit(value: u8) -> char {
     }
 }
 
-pub(super) fn html_response(
+pub(in crate::browser) fn html_response(
     status: u16,
     headers: Vec<(String, String)>,
     body: String,
@@ -183,7 +183,7 @@ pub(super) fn html_response(
     }
 }
 
-pub(super) fn error_response(status: u16, message: &str) -> DemoHttpResponse {
+pub(in crate::browser) fn error_response(status: u16, message: &str) -> DemoHttpResponse {
     html_response(
         status,
         Vec::new(),
@@ -194,7 +194,7 @@ pub(super) fn error_response(status: u16, message: &str) -> DemoHttpResponse {
     )
 }
 
-pub(super) fn redirect_response(
+pub(in crate::browser) fn redirect_response(
     status: u16,
     location: &str,
     set_cookie: Option<String>,
@@ -209,7 +209,7 @@ pub(super) fn redirect_response(
     html_response(status, headers, String::new())
 }
 
-pub(super) fn write_http_response(
+pub(in crate::browser) fn write_http_response(
     stream: &mut TcpStream,
     response: DemoHttpResponse,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -240,7 +240,7 @@ pub(super) fn write_http_response(
     Ok(())
 }
 
-pub(super) fn html_escape(value: &str) -> String {
+pub(in crate::browser) fn html_escape(value: &str) -> String {
     let mut escaped = String::new();
     for character in value.chars() {
         match character {

@@ -273,6 +273,14 @@ where
         Some(challenge) => challenge,
         None => return Err("challenge should be fetchable".into()),
     };
+    assert_eq!(fetched.purpose, ChallengePurpose::EmailSignIn);
+    assert_eq!(fetched.delivery, ChallengeDelivery::MagicLink);
+    assert_eq!(fetched.expires_at, UnixTimestampMicros::try_new(1_000)?);
+    assert_eq!(fetched.max_attempts.get(), 5);
+    assert_eq!(
+        fetched.redirect_path.as_ref().map(RedirectPath::as_str),
+        Some("/account")
+    );
     assert_eq!(fetched.resend_after, now());
     assert_eq!(fetched.last_sent_at, None);
 
@@ -307,6 +315,51 @@ where
         })
         .await?;
     assert_eq!(missing_increment, None);
+
+    let otp_challenge_id = ids.challenge_id()?;
+    store
+        .create_challenge(CreateChallengeInput {
+            id: otp_challenge_id.clone(),
+            purpose: ChallengePurpose::SignupConfirmation,
+            user_id: None,
+            email_canonical: EmailAddress::parse("otp-challenge@example.com")?
+                .canonical()
+                .clone(),
+            secret_hash: token_hash(8)?,
+            delivery: ChallengeDelivery::OtpCode,
+            redirect_path: None,
+            expires_at: UnixTimestampMicros::try_new(10)?,
+            max_attempts: RetryBudget::try_new(2)?,
+            resend_after: UnixTimestampMicros::try_new(30)?,
+            now: now(),
+        })
+        .await?;
+    let otp = store
+        .get_challenge(GetChallengeInput {
+            challenge_id: otp_challenge_id.clone(),
+        })
+        .await?;
+    let otp = match otp {
+        Some(challenge) => challenge,
+        None => return Err("OTP challenge should be fetchable".into()),
+    };
+    assert_eq!(otp.purpose, ChallengePurpose::SignupConfirmation);
+    assert_eq!(otp.delivery, ChallengeDelivery::OtpCode);
+    assert_eq!(otp.redirect_path, None);
+    assert_eq!(otp.expires_at, UnixTimestampMicros::try_new(10)?);
+    assert_eq!(otp.max_attempts.get(), 2);
+    assert_eq!(otp.resend_after, UnixTimestampMicros::try_new(30)?);
+
+    let otp_attempt = store
+        .increment_challenge_attempts(IncrementChallengeAttemptsInput {
+            challenge_id: otp_challenge_id,
+        })
+        .await?;
+    let otp_attempt = match otp_attempt {
+        Some(challenge) => challenge,
+        None => return Err("OTP challenge should count attempts".into()),
+    };
+    assert_eq!(otp_attempt.attempt_count, 1);
     Ok(())
 }
 
@@ -544,5 +597,5 @@ fn now() -> UnixTimestampMicros {
 }
 
 fn token_hash(byte: u8) -> Result<TokenHash, harbor_core::DomainError> {
-    TokenHash::try_new(vec![byte; 4])
+    TokenHash::try_new(vec![byte; 32])
 }

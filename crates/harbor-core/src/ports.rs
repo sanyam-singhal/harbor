@@ -224,6 +224,3 @@ fn pow10(digits: usize) -> Option<u64> {
     }
     Some(value)
 }
-
-#[cfg(test)]
-mod tests;

@@ -92,8 +92,6 @@ pub enum ChallengeDelivery {
     MagicLink,
     /// Numeric OTP code.
     OtpCode,
-    /// Both a high-entropy URL token and a numeric OTP code.
-    Both,
 }
 
 /// Persisted email challenge.
@@ -773,6 +771,3 @@ impl<T> AuthStore for T where
         + AccountStore
 {
 }
-
-#[cfg(test)]
-mod tests;

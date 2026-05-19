@@ -101,8 +101,9 @@ impl PasswordBlocklist for CommonPasswordBlocklist {
             "letmeinletmeinletmein",
         ];
 
-        let lowercase = password.to_ascii_lowercase();
-        BLOCKED.contains(&lowercase.as_str())
+        BLOCKED
+            .iter()
+            .any(|blocked| blocked.eq_ignore_ascii_case(password))
     }
 }
 
@@ -374,11 +375,13 @@ impl Argon2PasswordHasher {
     }
 
     fn needs_rehash(self, stored_hash: &PasswordHashString) -> bool {
-        let expected = format!(
-            "m={},t={},p={}",
-            self.params.memory_cost_kib, self.params.iterations, self.params.parallelism
-        );
-        !stored_hash.expose_phc().contains(&expected)
+        let Ok(parsed) = PasswordHash::new(stored_hash.expose_phc()) else {
+            return true;
+        };
+        parsed.algorithm.as_str() != "argon2id"
+            || parsed.params.get_decimal("m") != Some(self.params.memory_cost_kib)
+            || parsed.params.get_decimal("t") != Some(self.params.iterations)
+            || parsed.params.get_decimal("p") != Some(self.params.parallelism)
     }
 }
 
@@ -393,6 +396,3 @@ fn generate_salt(generator: &impl SecretGenerator) -> Result<SaltString, Passwor
     generator.fill_bytes(&mut bytes)?;
     SaltString::encode_b64(&bytes).map_err(|_error| PasswordHashError::HashFailed)
 }
-
-#[cfg(test)]
-mod tests;

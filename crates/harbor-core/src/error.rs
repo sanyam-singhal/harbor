@@ -351,6 +351,3 @@ impl From<ConfigError> for AuthError {
         Self::with_detail(AuthErrorCode::Config, value.code.as_str())
     }
 }
-
-#[cfg(test)]
-mod tests;

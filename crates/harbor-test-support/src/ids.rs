@@ -138,23 +138,3 @@ fn safe_email_label(value: &str) -> String {
     }
     label
 }
-
-#[cfg(test)]
-mod tests {
-    use super::TestIdFactory;
-
-    #[test]
-    fn factory_produces_valid_unique_domain_values() -> Result<(), Box<dyn std::error::Error>> {
-        let mut ids = TestIdFactory::new("Auth Flow");
-
-        assert_ne!(ids.user_id()?, ids.user_id()?);
-        assert_ne!(ids.user_email_id()?, ids.user_email_id()?);
-        assert_ne!(ids.challenge_id()?, ids.challenge_id()?);
-        assert_ne!(ids.session_id()?, ids.session_id()?);
-        assert_ne!(ids.auth_event_id()?, ids.auth_event_id()?);
-        assert_ne!(ids.email()?.canonical(), ids.email()?.canonical());
-        assert!(ids.request_fingerprint().contains("client="));
-        assert_ne!(ids.token_hash()?, ids.token_hash()?);
-        Ok(())
-    }
-}

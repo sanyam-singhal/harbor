@@ -1,9 +1,10 @@
-use super::{
-    Clock, RandomError, SecretGenerator, SystemClock, new_auth_event_id, new_challenge_id,
-    new_session_id, new_user_email_id, new_user_id, random_otp_code, random_otp_code_with_digits,
-    random_session_token, random_url_token,
+//! Integration tests for Harbor clock and randomness ports.
+
+use harbor_core::{
+    Clock, DomainError, RandomError, SecretGenerator, SystemClock, UnixTimestampMicros,
+    new_auth_event_id, new_challenge_id, new_session_id, new_user_email_id, new_user_id,
+    random_otp_code, random_session_token, random_url_token,
 };
-use crate::{DomainError, UnixTimestampMicros};
 
 #[derive(Clone)]
 struct FixedGenerator {
@@ -63,12 +64,6 @@ fn generated_otp_uses_requested_width() -> Result<(), RandomError> {
     let generator = FixedGenerator { byte: 0 };
 
     assert_eq!(random_otp_code(&generator)?.expose_secret(), "00000000");
-    assert_eq!(
-        random_otp_code_with_digits(&generator, 6)?.expose_secret(),
-        "000000"
-    );
-    assert!(random_otp_code_with_digits(&generator, 5).is_err());
-    assert!(random_otp_code_with_digits(&generator, 13).is_err());
     Ok(())
 }
 

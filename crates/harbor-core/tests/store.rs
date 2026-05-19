@@ -1,7 +1,9 @@
-use crate::{
-    ChallengeDelivery, ChallengePurpose, CreatePasswordUserInput, EmailAddress,
-    InsertPasswordInput, PasswordCredentialRecord, StoreError, StoreErrorCode, UnixTimestampMicros,
-    UserEmailId, UserId,
+//! Integration tests for Harbor store data contracts.
+
+use harbor_core::{
+    Argon2PasswordHasher, ChallengeDelivery, ChallengePurpose, CreatePasswordUserInput,
+    EmailAddress, InsertPasswordInput, PasswordCredentialRecord, PasswordHashString, StoreError,
+    StoreErrorCode, UnixTimestampMicros, UserEmailId, UserId,
 };
 
 #[test]
@@ -11,7 +13,7 @@ fn password_records_do_not_debug_hashes() -> Result<(), Box<dyn std::error::Erro
     let phc = "$argon2id$v=19$m=32,t=1,p=1$AAECAwQFBgcICQoLDA0ODw$e9Q8Zc8mW2hS9UG+4XH15Q";
     let record = PasswordCredentialRecord {
         user_id,
-        password_hash: crate::PasswordHashString::try_new(phc)?,
+        password_hash: PasswordHashString::try_new(phc)?,
         password_set_at: UnixTimestampMicros::EPOCH,
         password_version: 1,
     };
@@ -36,7 +38,7 @@ fn password_records_do_not_debug_hashes() -> Result<(), Box<dyn std::error::Erro
         email_id: UserEmailId::try_new("email00000000002")?,
         email_original: email.original().to_owned(),
         email_canonical: email.canonical().clone(),
-        password_hash: crate::PasswordHashString::try_new(phc)?,
+        password_hash: PasswordHashString::try_new(phc)?,
         password_set_at: UnixTimestampMicros::EPOCH,
         password_version: 1,
         now: UnixTimestampMicros::EPOCH,
@@ -55,8 +57,8 @@ fn password_records_do_not_debug_hashes() -> Result<(), Box<dyn std::error::Erro
 
 #[test]
 fn passive_store_records_are_debuggable_without_password_hashes()
--> Result<(), crate::PasswordHashError> {
-    let hash = crate::Argon2PasswordHasher::default();
+-> Result<(), harbor_core::PasswordHashError> {
+    let hash = Argon2PasswordHasher::default();
     assert_eq!(hash.policy().min_chars(), 15);
 
     let _type_marker = core::any::type_name::<PasswordCredentialRecord>();

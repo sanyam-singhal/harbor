@@ -1,4 +1,17 @@
-use super::*;
+//! SQLite-backed auth service integration tests.
+
+mod support;
+
+use harbor_core::{
+    AuthErrorCode, ChallengeDelivery, ChallengeId, ChallengePurpose, ChallengeStore,
+    CreateChallengeInput, EmailAddress, GetChallengeInput, HmacSecretKey, RedirectPath,
+    RetryBudget, SecretHashPurpose, SecretToken, UnixTimestampMicros, hash_secret_token,
+};
+use sqlx::Row;
+use support::{
+    ABSOLUTE_SESSION_MICROS, FailAfterFirstSecretGenerator, FailingSecretGenerator, migrated_store,
+    now, test_service, test_service_at, test_service_with_generator, test_service_with_key_at,
+};
 
 #[tokio::test(flavor = "current_thread")]
 async fn email_challenge_service_rejects_bad_secret_and_consumed_reuse()

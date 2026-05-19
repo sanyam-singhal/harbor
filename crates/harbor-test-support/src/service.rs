@@ -124,17 +124,3 @@ impl<S, G> TestAuthServiceBuilder<S, G> {
         ))
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::TestAuthServiceBuilder;
-
-    #[test]
-    fn builder_rejects_weak_hmac_key() {
-        let result = TestAuthServiceBuilder::new("store")
-            .with_hmac_key(vec![1; 8])
-            .finish();
-
-        assert!(result.is_err());
-    }
-}

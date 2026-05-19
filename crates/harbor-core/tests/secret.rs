@@ -1,7 +1,9 @@
-use super::{
-    HmacSecretKey, SecretHashPurpose, constant_time_token_hash_eq, hash_secret, hash_secret_token,
+//! Integration tests for Harbor secret hashing contracts.
+
+use harbor_core::{
+    DomainError, HmacSecretKey, SecretHashPurpose, SecretToken, constant_time_token_hash_eq,
+    hash_secret, hash_secret_token,
 };
-use crate::{DomainError, SecretToken};
 
 fn test_key() -> Result<HmacSecretKey, DomainError> {
     HmacSecretKey::try_new(vec![7; 32])

@@ -86,21 +86,3 @@ fn safe_label(label: &str) -> String {
     }
     safe
 }
-
-#[cfg(test)]
-mod tests {
-    use super::TempSqliteDatabase;
-
-    #[test]
-    fn temp_sqlite_database_provides_unique_urls() -> Result<(), Box<dyn std::error::Error>> {
-        let first = TempSqliteDatabase::new("fixture one")?;
-        let second = TempSqliteDatabase::new("fixture one")?;
-
-        assert_ne!(first.database_url(), second.database_url());
-        assert!(first.root().exists());
-        assert!(first.database_path().ends_with("harbor.sqlite"));
-        assert!(first.database_url().starts_with("sqlite://"));
-        assert!(first.database_url().ends_with("?mode=rwc"));
-        Ok(())
-    }
-}

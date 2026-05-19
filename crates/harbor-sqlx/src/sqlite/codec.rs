@@ -8,7 +8,9 @@ use harbor_core::{
 };
 use sqlx::Row;
 
-pub(super) fn user_from_row(row: &sqlx::sqlite::SqliteRow) -> Result<UserRecord, StoreError> {
+pub(in crate::sqlite) fn user_from_row(
+    row: &sqlx::sqlite::SqliteRow,
+) -> Result<UserRecord, StoreError> {
     Ok(UserRecord {
         id: user_id(get_string(row, "id")?)?,
         created_at: timestamp(get_i64(row, "created_at_unix_micros")?)?,
@@ -17,7 +19,9 @@ pub(super) fn user_from_row(row: &sqlx::sqlite::SqliteRow) -> Result<UserRecord,
     })
 }
 
-pub(super) fn email_from_row(row: &sqlx::sqlite::SqliteRow) -> Result<UserEmailRecord, StoreError> {
+pub(in crate::sqlite) fn email_from_row(
+    row: &sqlx::sqlite::SqliteRow,
+) -> Result<UserEmailRecord, StoreError> {
     Ok(UserEmailRecord {
         id: harbor_core::UserEmailId::try_new(get_string(row, "id")?).map_err(map_domain_error)?,
         user_id: user_id(get_string(row, "user_id")?)?,
@@ -31,7 +35,7 @@ pub(super) fn email_from_row(row: &sqlx::sqlite::SqliteRow) -> Result<UserEmailR
     })
 }
 
-pub(super) fn password_from_row(
+pub(in crate::sqlite) fn password_from_row(
     row: &sqlx::sqlite::SqliteRow,
 ) -> Result<PasswordCredentialRecord, StoreError> {
     Ok(PasswordCredentialRecord {
@@ -45,7 +49,7 @@ pub(super) fn password_from_row(
     })
 }
 
-pub(super) fn challenge_from_row(
+pub(in crate::sqlite) fn challenge_from_row(
     row: &sqlx::sqlite::SqliteRow,
 ) -> Result<ChallengeRecord, StoreError> {
     Ok(ChallengeRecord {
@@ -73,7 +77,9 @@ pub(super) fn challenge_from_row(
     })
 }
 
-pub(super) fn session_from_row(row: &sqlx::sqlite::SqliteRow) -> Result<SessionRecord, StoreError> {
+pub(in crate::sqlite) fn session_from_row(
+    row: &sqlx::sqlite::SqliteRow,
+) -> Result<SessionRecord, StoreError> {
     Ok(SessionRecord {
         id: SessionId::try_new(get_string(row, "id")?).map_err(map_domain_error)?,
         user_id: user_id(get_string(row, "user_id")?)?,
@@ -94,7 +100,7 @@ pub(super) fn session_from_row(row: &sqlx::sqlite::SqliteRow) -> Result<SessionR
     })
 }
 
-pub(super) fn auth_event_kind_to_db(value: AuthEventKind) -> &'static str {
+pub(in crate::sqlite) fn auth_event_kind_to_db(value: AuthEventKind) -> &'static str {
     match value {
         AuthEventKind::SignupRequested => "signup_requested",
         AuthEventKind::EmailVerified => "email_verified",
@@ -107,7 +113,7 @@ pub(super) fn auth_event_kind_to_db(value: AuthEventKind) -> &'static str {
     }
 }
 
-pub(super) fn challenge_purpose_to_db(value: ChallengePurpose) -> &'static str {
+pub(in crate::sqlite) fn challenge_purpose_to_db(value: ChallengePurpose) -> &'static str {
     match value {
         ChallengePurpose::SignupConfirmation => "signup_confirmation",
         ChallengePurpose::EmailSignIn => "email_sign_in",
@@ -116,7 +122,9 @@ pub(super) fn challenge_purpose_to_db(value: ChallengePurpose) -> &'static str {
     }
 }
 
-pub(super) fn challenge_purpose_from_db(value: &str) -> Result<ChallengePurpose, StoreError> {
+pub(in crate::sqlite) fn challenge_purpose_from_db(
+    value: &str,
+) -> Result<ChallengePurpose, StoreError> {
     match value {
         "signup_confirmation" => Ok(ChallengePurpose::SignupConfirmation),
         "email_sign_in" => Ok(ChallengePurpose::EmailSignIn),
@@ -128,20 +136,20 @@ pub(super) fn challenge_purpose_from_db(value: &str) -> Result<ChallengePurpose,
     }
 }
 
-pub(super) fn challenge_delivery_to_db(value: ChallengeDelivery) -> &'static str {
+pub(in crate::sqlite) fn challenge_delivery_to_db(value: ChallengeDelivery) -> &'static str {
     match value {
         ChallengeDelivery::MagicLink => "magic_link",
         ChallengeDelivery::OtpCode => "otp_code",
-        ChallengeDelivery::Both => "both",
         _ => "unknown",
     }
 }
 
-pub(super) fn challenge_delivery_from_db(value: &str) -> Result<ChallengeDelivery, StoreError> {
+pub(in crate::sqlite) fn challenge_delivery_from_db(
+    value: &str,
+) -> Result<ChallengeDelivery, StoreError> {
     match value {
         "magic_link" => Ok(ChallengeDelivery::MagicLink),
         "otp_code" => Ok(ChallengeDelivery::OtpCode),
-        "both" => Ok(ChallengeDelivery::Both),
         _ => Err(StoreError::with_detail(
             StoreErrorCode::CorruptData,
             "challenge_delivery",
@@ -149,11 +157,11 @@ pub(super) fn challenge_delivery_from_db(value: &str) -> Result<ChallengeDeliver
     }
 }
 
-pub(super) fn map_domain_error(_error: DomainError) -> StoreError {
+pub(in crate::sqlite) fn map_domain_error(_error: DomainError) -> StoreError {
     StoreError::with_detail(StoreErrorCode::CorruptData, "domain_decode")
 }
 
-pub(super) fn map_sqlx_error(error: sqlx::Error, detail: &'static str) -> StoreError {
+pub(in crate::sqlite) fn map_sqlx_error(error: sqlx::Error, detail: &'static str) -> StoreError {
     match error {
         sqlx::Error::Database(database_error) if database_error.is_unique_violation() => {
             StoreError::with_detail(StoreErrorCode::Conflict, detail)
@@ -191,7 +199,7 @@ fn get_optional_bytes(
         .map_err(|error| map_sqlx_error(error, column))
 }
 
-pub(super) fn get_i64(
+pub(in crate::sqlite) fn get_i64(
     row: &sqlx::sqlite::SqliteRow,
     column: &'static str,
 ) -> Result<i64, StoreError> {
@@ -223,4 +231,103 @@ fn retry_budget(value: i64) -> Result<RetryBudget, StoreError> {
 
 fn optional_timestamp(value: Option<i64>) -> Result<Option<UnixTimestampMicros>, StoreError> {
     value.map(timestamp).transpose()
+}
+
+#[cfg(test)]
+#[test]
+fn enum_codecs_round_trip_stable_storage_values() {
+    assert_eq!(
+        challenge_purpose_from_db("signup_confirmation"),
+        Ok(ChallengePurpose::SignupConfirmation)
+    );
+    assert_eq!(
+        challenge_purpose_from_db("email_sign_in"),
+        Ok(ChallengePurpose::EmailSignIn)
+    );
+    assert_eq!(
+        challenge_purpose_from_db("password_reset"),
+        Ok(ChallengePurpose::PasswordReset)
+    );
+    assert_eq!(
+        challenge_purpose_from_db("bogus").map_err(|error| error.code()),
+        Err(StoreErrorCode::CorruptData)
+    );
+    assert_eq!(
+        challenge_delivery_from_db("magic_link"),
+        Ok(ChallengeDelivery::MagicLink)
+    );
+    assert_eq!(
+        challenge_delivery_from_db("otp_code"),
+        Ok(ChallengeDelivery::OtpCode)
+    );
+    assert_eq!(
+        challenge_delivery_from_db("bogus").map_err(|error| error.code()),
+        Err(StoreErrorCode::CorruptData)
+    );
+
+    assert_eq!(
+        challenge_purpose_to_db(ChallengePurpose::SignupConfirmation),
+        "signup_confirmation"
+    );
+    assert_eq!(
+        challenge_purpose_to_db(ChallengePurpose::EmailSignIn),
+        "email_sign_in"
+    );
+    assert_eq!(
+        challenge_purpose_to_db(ChallengePurpose::PasswordReset),
+        "password_reset"
+    );
+    assert_eq!(
+        challenge_delivery_to_db(ChallengeDelivery::MagicLink),
+        "magic_link"
+    );
+    assert_eq!(
+        challenge_delivery_to_db(ChallengeDelivery::OtpCode),
+        "otp_code"
+    );
+    assert_eq!(
+        auth_event_kind_to_db(AuthEventKind::SignupRequested),
+        "signup_requested"
+    );
+    assert_eq!(
+        auth_event_kind_to_db(AuthEventKind::EmailVerified),
+        "email_verified"
+    );
+    assert_eq!(
+        auth_event_kind_to_db(AuthEventKind::SignInSucceeded),
+        "sign_in_succeeded"
+    );
+    assert_eq!(
+        auth_event_kind_to_db(AuthEventKind::SignInFailed),
+        "sign_in_failed"
+    );
+    assert_eq!(
+        auth_event_kind_to_db(AuthEventKind::PasswordResetRequested),
+        "password_reset_requested"
+    );
+    assert_eq!(
+        auth_event_kind_to_db(AuthEventKind::PasswordResetCompleted),
+        "password_reset_completed"
+    );
+    assert_eq!(
+        auth_event_kind_to_db(AuthEventKind::SessionRevoked),
+        "session_revoked"
+    );
+}
+
+#[cfg(test)]
+#[test]
+fn error_mapping_uses_stable_store_error_codes() {
+    assert_eq!(
+        map_domain_error(harbor_core::DomainError::Empty).code(),
+        StoreErrorCode::CorruptData
+    );
+    assert_eq!(
+        map_sqlx_error(sqlx::Error::ColumnNotFound("missing".to_owned()), "column").code(),
+        StoreErrorCode::CorruptData
+    );
+    assert_eq!(
+        map_sqlx_error(sqlx::Error::RowNotFound, "row").code(),
+        StoreErrorCode::Unavailable
+    );
 }

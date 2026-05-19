@@ -62,6 +62,28 @@ understand the domain
   needs a bound or an explicit reason it cannot be bounded.
 - Every phase of work should leave the repository shippable.
 
+## Change Ordering And Test Placement
+
+When replacing, moving, or modularizing code, always land the new writes before
+deleting the old ones. Create the new module/file/test target, wire it into the
+build, run the narrow check that proves the new path works, and only then remove
+the old file or old entry point. Delete-first refactors make interruption,
+review, and recovery harder than they need to be.
+
+Tests belong in exactly two places:
+
+- Directly beside the source they test, only when they exercise private
+  same-file logic. Keep these tests in the same module scope with `#[cfg(test)]`
+  on the test helpers/functions; do not create nested `mod tests`, `use super`,
+  or `super::` indirection.
+- In the crate-level `tests/` directory when they exercise public APIs,
+  cross-module behavior, integration contracts, or behavior spread across
+  multiple source files.
+
+Do not add `src/tests.rs`, `src/*/tests.rs`, or test-only module trees inside
+production source directories. If a test needs imports from multiple production
+modules, it is an integration test and should go through the crate boundary.
+
 ## Workspace Foundation
 
 Start with a disciplined workspace layout:

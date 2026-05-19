@@ -78,11 +78,16 @@ where
     G: SecretGenerator,
     B: PasswordBlocklist,
 {
+    let AuthLinkQuery {
+        challenge,
+        token,
+        redirect,
+    } = query;
     let signin = service
         .sign_in_with_email_challenge(harbor_core::EmailChallengeSignInInput {
-            challenge_id: parse_link_challenge_id(query.challenge)?,
-            secret: parse_link_token(query.token)?,
-            redirect_path: query.redirect.clone(),
+            challenge_id: parse_link_challenge_id(challenge)?,
+            secret: parse_link_token(token)?,
+            redirect_path: redirect,
         })
         .await?;
     let set_cookie = build_session_cookie(config.cookie_defaults(), &signin.session_token, None)

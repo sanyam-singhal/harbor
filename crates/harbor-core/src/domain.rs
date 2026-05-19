@@ -11,6 +11,7 @@ const MAX_REDIRECT_PATH_BYTES: usize = 2048;
 const MAX_SECRET_TOKEN_BYTES: usize = 4096;
 const MIN_OPAQUE_ID_BYTES: usize = 16;
 const MAX_OPAQUE_ID_BYTES: usize = 128;
+const TOKEN_HASH_BYTES: usize = 32;
 
 /// Error returned when a domain newtype rejects an input.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -147,6 +148,18 @@ impl EmailAddress {
     #[must_use]
     pub fn canonical(&self) -> &CanonicalEmail {
         &self.canonical
+    }
+
+    /// Consumes the email address into its original and canonical forms.
+    #[must_use]
+    pub fn into_parts(self) -> (String, CanonicalEmail) {
+        (self.original, self.canonical)
+    }
+
+    /// Consumes the email address into Harbor's canonical lookup value.
+    #[must_use]
+    pub fn into_canonical(self) -> CanonicalEmail {
+        self.canonical
     }
 }
 
@@ -353,11 +366,12 @@ impl TokenHash {
     ///
     /// # Errors
     ///
-    /// Returns [`DomainError`] when the hash is empty.
+    /// Returns [`DomainError`] when the hash is not Harbor's fixed HMAC-SHA256
+    /// output length.
     pub fn try_new(value: impl Into<Vec<u8>>) -> Result<Self, DomainError> {
         let value = value.into();
-        if value.is_empty() {
-            return Err(DomainError::Empty);
+        if value.len() != TOKEN_HASH_BYTES {
+            return Err(DomainError::OutOfRange);
         }
         Ok(Self(value))
     }
@@ -403,8 +417,10 @@ fn canonicalize_email(value: &str) -> Result<String, DomainError> {
         return Err(DomainError::InvalidCharacters);
     }
 
-    let (local, domain) = value.split_once('@').ok_or(DomainError::InvalidFormat)?;
-    if value.matches('@').count() != 1 {
+    let mut parts = value.split('@');
+    let local = parts.next().ok_or(DomainError::InvalidFormat)?;
+    let domain = parts.next().ok_or(DomainError::InvalidFormat)?;
+    if parts.next().is_some() {
         return Err(DomainError::InvalidFormat);
     }
     validate_local_part(local)?;
@@ -547,6 +563,3 @@ impl<'a> From<&'a EmailAddress> for Cow<'a, str> {
         Cow::Borrowed(value.original())
     }
 }
-
-#[cfg(test)]
-mod tests;

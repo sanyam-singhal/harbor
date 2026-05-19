@@ -4,17 +4,18 @@ use crate::{
     Argon2PasswordHasher, AuthError, AuthErrorCode, AuthStore, ChallengeDelivery, ChallengePurpose,
     ChallengeRecord, Clock, CommonPasswordBlocklist, CreateChallengeInput, CreatePasswordUserInput,
     CreateSessionInput, CreateVerifiedEmailUserInput, EmailAddress, FindEmailByCanonicalInput,
-    GetChallengeInput, GetPasswordCredentialInput, GetSessionInput, HmacSecretKey,
+    GetChallengeInput, GetPasswordCredentialInput, GetSessionInput, GetUserInput, HmacSecretKey,
     IncrementRateLimitInput, InsertPasswordInput, MarkEmailVerifiedInput, PasswordBlocklist,
     PasswordCredentialRecord, RedirectPath, RetryBudget, RevokeSessionInput,
     RevokeUserSessionsInput, SecretGenerator, SecretHashPurpose, SecretToken, SessionRecord,
-    UnixTimestampMicros, UserEmailRecord, constant_time_token_hash_eq, hash_secret,
-    hash_secret_token, new_challenge_id, new_session_id, new_user_email_id, new_user_id,
-    random_otp_code, random_session_token, random_url_token,
+    UnixTimestampMicros, UpdateSessionLastSeenInput, UserEmailRecord, constant_time_token_hash_eq,
+    hash_secret, hash_secret_token, new_challenge_id, new_session_id, new_user_email_id,
+    new_user_id, random_otp_code, random_session_token, random_url_token,
 };
 
 const DEFAULT_IDLE_SESSION_MICROS: i64 = 12 * 60 * 60 * 1_000_000;
 const DEFAULT_ABSOLUTE_SESSION_MICROS: i64 = 30 * 24 * 60 * 60 * 1_000_000;
+const SESSION_LAST_SEEN_UPDATE_MICROS: i64 = 60 * 1_000_000;
 const SIGNUP_CONFIRMATION_MICROS: i64 = 30 * 60 * 1_000_000;
 const EMAIL_SIGNIN_MICROS: i64 = 10 * 60 * 1_000_000;
 const PASSWORD_RESET_MICROS: i64 = 15 * 60 * 1_000_000;
@@ -94,6 +95,7 @@ where
     ) -> Result<PasswordSignUpOutput, AuthError> {
         let email = EmailAddress::parse(input.email)
             .map_err(|_error| AuthError::new(AuthErrorCode::InvalidCredentials))?;
+        let (email_original, email_canonical) = email.into_parts();
         let now = self.clock.now();
         let user_id = new_user_id(&self.generator)
             .map_err(|_error| AuthError::with_detail(AuthErrorCode::Internal, "user_id"))?;
@@ -109,8 +111,8 @@ where
             .create_password_user(CreatePasswordUserInput {
                 user_id,
                 email_id,
-                email_original: email.original().to_owned(),
-                email_canonical: email.canonical().clone(),
+                email_original,
+                email_canonical,
                 password_hash,
                 password_set_at: now,
                 password_version: 1,
@@ -140,7 +142,7 @@ where
         let email_record = self
             .store
             .find_email_by_canonical(FindEmailByCanonicalInput {
-                email_canonical: email.canonical().clone(),
+                email_canonical: email.into_canonical(),
             })
             .await
             .map_err(AuthError::from)?
@@ -163,6 +165,13 @@ where
         if !verification.verified {
             return Err(AuthError::new(AuthErrorCode::InvalidCredentials));
         }
+        self.rehash_password_if_needed(
+            &email_record.user_id,
+            &input.password,
+            &credential,
+            verification.needs_rehash,
+        )
+        .await?;
 
         let signin = self
             .create_session_for_user(email_record.user_id, input.redirect_path)
@@ -205,6 +214,20 @@ where
         {
             return Ok(None);
         }
+        let Some(user) = self
+            .store
+            .get_user(GetUserInput {
+                user_id: session.user_id.clone(),
+            })
+            .await
+            .map_err(AuthError::from)?
+        else {
+            return Ok(None);
+        };
+        if user.disabled_at.is_some() {
+            return Ok(None);
+        }
+        let session = self.refresh_last_seen_if_due(session, now).await?;
         Ok(Some(CurrentSession { session }))
     }
 
@@ -288,9 +311,7 @@ where
             .map_err(|_error| AuthError::new(AuthErrorCode::InvalidCredentials))?;
         let secret = match input.delivery {
             ChallengeDelivery::OtpCode => random_otp_code(&self.generator),
-            ChallengeDelivery::MagicLink | ChallengeDelivery::Both => {
-                random_url_token(&self.generator)
-            }
+            ChallengeDelivery::MagicLink => random_url_token(&self.generator),
         }
         .map_err(|_error| AuthError::with_detail(AuthErrorCode::Internal, "challenge_secret"))?;
         let secret_hash = hash_secret_token(
@@ -314,7 +335,7 @@ where
                 })?,
                 purpose: input.purpose,
                 user_id: input.user_id,
-                email_canonical: email.canonical().clone(),
+                email_canonical: email.into_canonical(),
                 secret_hash,
                 delivery: input.delivery,
                 redirect_path: input.redirect_path,
@@ -422,7 +443,7 @@ where
             })
             .await?;
         let email_record = self
-            .ensure_verified_email_account(verified.challenge.email_canonical.clone())
+            .ensure_verified_email_account(verified.challenge.email_canonical)
             .await?;
         let signin = self
             .create_session_for_user(email_record.user_id.clone(), input.redirect_path)
@@ -454,7 +475,7 @@ where
         let email_record = self
             .store
             .find_email_by_canonical(FindEmailByCanonicalInput {
-                email_canonical: email.canonical().clone(),
+                email_canonical: email.into_canonical(),
             })
             .await
             .map_err(AuthError::from)?;
@@ -614,6 +635,7 @@ where
         user_id: crate::UserId,
         redirect_path: Option<RedirectPath>,
     ) -> Result<PasswordSignInOutput, AuthError> {
+        self.ensure_user_can_authenticate(&user_id).await?;
         let session_token = random_session_token(&self.generator)
             .map_err(|_error| AuthError::with_detail(AuthErrorCode::Internal, "session_token"))?;
         let token_hash = hash_secret_token(
@@ -654,6 +676,77 @@ where
             redirect_path,
         })
     }
+
+    async fn ensure_user_can_authenticate(&self, user_id: &crate::UserId) -> Result<(), AuthError> {
+        let Some(user) = self
+            .store
+            .get_user(GetUserInput {
+                user_id: user_id.clone(),
+            })
+            .await
+            .map_err(AuthError::from)?
+        else {
+            return Err(AuthError::new(AuthErrorCode::InvalidCredentials));
+        };
+        if user.disabled_at.is_some() {
+            return Err(AuthError::new(AuthErrorCode::Forbidden));
+        }
+        Ok(())
+    }
+
+    async fn rehash_password_if_needed(
+        &self,
+        user_id: &crate::UserId,
+        password: &str,
+        credential: &PasswordCredentialRecord,
+        needs_rehash: bool,
+    ) -> Result<(), AuthError> {
+        if !needs_rehash {
+            return Ok(());
+        }
+        let password_hash = self
+            .password_hasher
+            .hash_password(password, &self.password_blocklist, &self.generator)
+            .map_err(|_error| AuthError::new(AuthErrorCode::InvalidCredentials))?;
+        let password_version = credential
+            .password_version
+            .checked_add(1)
+            .ok_or_else(|| AuthError::with_detail(AuthErrorCode::Internal, "password_version"))?;
+        self.store
+            .upsert_password_credential(InsertPasswordInput {
+                user_id: user_id.clone(),
+                password_hash,
+                password_set_at: self.clock.now(),
+                password_version,
+            })
+            .await
+            .map_err(AuthError::from)?;
+        Ok(())
+    }
+
+    async fn refresh_last_seen_if_due(
+        &self,
+        session: SessionRecord,
+        now: UnixTimestampMicros,
+    ) -> Result<SessionRecord, AuthError> {
+        let should_refresh = session
+            .last_seen_at
+            .checked_add_micros(SESSION_LAST_SEEN_UPDATE_MICROS)
+            .is_none_or(|next_refresh| next_refresh <= now);
+        if !should_refresh {
+            return Ok(session);
+        }
+        let session_id = session.id.clone();
+        let refreshed = self
+            .store
+            .update_session_last_seen(UpdateSessionLastSeenInput {
+                session_id,
+                last_seen_at: now,
+            })
+            .await
+            .map_err(AuthError::from)?;
+        Ok(refreshed.unwrap_or(session))
+    }
 }
 
 fn challenge_lifetime(purpose: ChallengePurpose) -> i64 {
@@ -667,7 +760,7 @@ fn challenge_lifetime(purpose: ChallengePurpose) -> i64 {
 fn secret_hash_purpose_for_delivery(delivery: ChallengeDelivery) -> SecretHashPurpose {
     match delivery {
         ChallengeDelivery::OtpCode => SecretHashPurpose::OtpCode,
-        ChallengeDelivery::MagicLink | ChallengeDelivery::Both => SecretHashPurpose::UrlToken,
+        ChallengeDelivery::MagicLink => SecretHashPurpose::UrlToken,
     }
 }
 

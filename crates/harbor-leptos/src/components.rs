@@ -99,6 +99,3 @@ pub fn Unauthenticated(children: leptos::prelude::Children) -> impl leptos::prel
         <div data-harbor-auth-state="unauthenticated">{children()}</div>
     }
 }
-
-#[cfg(test)]
-mod tests;

@@ -1,4 +1,6 @@
-use super::{
+//! Integration tests for Harbor error contracts.
+
+use harbor_core::{
     AuthError, AuthErrorCode, ConfigError, ConfigErrorCode, MailError, MailErrorCode, StoreError,
     StoreErrorCode,
 };

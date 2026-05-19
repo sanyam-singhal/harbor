@@ -1,6 +1,8 @@
-use super::{
-    CanonicalEmail, ChallengeId, DomainError, EmailAddress, RedirectPath, RetryBudget, SecretToken,
-    SessionId, TokenHash, UnixTimestampMicros, UserEmailId, UserId,
+//! Integration tests for Harbor domain value contracts.
+
+use harbor_core::{
+    AuthEventId, CanonicalEmail, ChallengeId, DomainError, EmailAddress, RedirectPath, RetryBudget,
+    SecretToken, SessionId, TokenHash, UnixTimestampMicros, UserEmailId, UserId,
 };
 
 #[test]
@@ -10,8 +12,8 @@ fn opaque_ids_accept_expected_alphabet() {
     assert!(UserId::try_new(id).is_ok());
     assert!(SessionId::try_new(id).is_ok());
     assert!(ChallengeId::try_new(id).is_ok());
-    assert!(super::UserEmailId::try_new(id).is_ok());
-    assert!(super::AuthEventId::try_new(id).is_ok());
+    assert!(UserEmailId::try_new(id).is_ok());
+    assert!(AuthEventId::try_new(id).is_ok());
 }
 
 #[test]
@@ -52,7 +54,7 @@ fn opaque_ids_display_and_convert_without_changing_value() -> Result<(), Box<dyn
     let session = SessionId::try_new("session000000001")?;
     let challenge = ChallengeId::try_new("challenge00000001")?;
     let email = UserEmailId::try_new("email00000000001")?;
-    let event = super::AuthEventId::try_new("event00000000001")?;
+    let event = AuthEventId::try_new("event00000000001")?;
 
     assert_eq!(user.to_string(), "user000000000001");
     assert_eq!(
@@ -74,6 +76,16 @@ fn email_parse_preserves_original_and_builds_canonical_lookup() -> Result<(), Do
 
     assert_eq!(email.original(), "User.Name+Tag@Example.COM");
     assert_eq!(email.canonical().as_str(), "user.name+tag@example.com");
+
+    let (original, canonical) = email.into_parts();
+    assert_eq!(original, "User.Name+Tag@Example.COM");
+    assert_eq!(canonical.as_str(), "user.name+tag@example.com");
+    assert_eq!(
+        EmailAddress::parse("Another.User@Example.COM")?
+            .into_canonical()
+            .as_str(),
+        "another.user@example.com"
+    );
     Ok(())
 }
 
@@ -165,11 +177,11 @@ fn timestamps_and_retry_budgets_enforce_bounds() {
 #[test]
 fn secret_debug_output_is_redacted() -> Result<(), DomainError> {
     let token = SecretToken::try_new("secret-token")?;
-    let hash = TokenHash::try_new(vec![1, 2, 3])?;
+    let hash = TokenHash::try_new(vec![1; 32])?;
 
     assert_eq!(format!("{token:?}"), "SecretToken([REDACTED])");
     assert_eq!(format!("{hash:?}"), "TokenHash([REDACTED])");
     assert_eq!(token.expose_secret(), "secret-token");
-    assert_eq!(hash.as_bytes(), &[1, 2, 3]);
+    assert_eq!(hash.as_bytes(), &[1; 32]);
     Ok(())
 }

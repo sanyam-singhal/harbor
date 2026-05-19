@@ -111,13 +111,13 @@ where
     route_response(handle_reset_password_link(parse_query(query)))
 }
 
-fn parse_query(query: HashMap<String, String>) -> AuthLinkQuery {
+fn parse_query(mut query: HashMap<String, String>) -> AuthLinkQuery {
     AuthLinkQuery {
-        challenge: query.get("challenge").cloned().unwrap_or_default(),
-        token: query.get("token").cloned().unwrap_or_default(),
+        challenge: query.remove("challenge").unwrap_or_default(),
+        token: query.remove("token").unwrap_or_default(),
         redirect: query
-            .get("redirect")
-            .and_then(|value| RedirectPath::try_new(value.clone()).ok()),
+            .remove("redirect")
+            .and_then(|value| RedirectPath::try_new(value).ok()),
     }
 }
 
@@ -158,6 +158,3 @@ fn auth_error_response(error: AuthError) -> Response {
         .insert(REFERRER_POLICY, HeaderValue::from_static("no-referrer"));
     response
 }
-
-#[cfg(test)]
-mod tests;

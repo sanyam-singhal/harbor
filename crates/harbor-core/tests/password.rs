@@ -1,8 +1,9 @@
-use super::{
-    Argon2Params, Argon2PasswordHasher, CommonPasswordBlocklist, PasswordError, PasswordHashString,
-    PasswordPolicy,
+//! Integration tests for Harbor password policy and hashing contracts.
+
+use harbor_core::{
+    Argon2Params, Argon2PasswordHasher, CommonPasswordBlocklist, PasswordError, PasswordHashError,
+    PasswordHashString, PasswordPolicy, RandomError, SecretGenerator,
 };
-use crate::ports::{RandomError, SecretGenerator};
 
 #[derive(Clone)]
 struct FixedGenerator;
@@ -16,7 +17,7 @@ impl SecretGenerator for FixedGenerator {
     }
 }
 
-fn fast_hasher() -> Result<Argon2PasswordHasher, super::PasswordHashError> {
+fn fast_hasher() -> Result<Argon2PasswordHasher, PasswordHashError> {
     Ok(Argon2PasswordHasher::new(
         PasswordPolicy::try_new(8, 128)?,
         Argon2Params::try_new(32, 1, 1)?,
@@ -137,25 +138,25 @@ fn invalid_stored_hash_is_rejected() {
 
 #[test]
 fn random_error_converts_to_hash_error_without_leaking_secret_context() {
-    let error = super::PasswordHashError::from(RandomError::SystemRandom);
+    let error = PasswordHashError::from(RandomError::SystemRandom);
     assert_eq!(
         error.to_string(),
         "random generation failed: system random source failed"
     );
     assert_eq!(
-        super::PasswordHashError::from(PasswordError::TooShort).to_string(),
+        PasswordHashError::from(PasswordError::TooShort).to_string(),
         "password is too short"
     );
     assert_eq!(
-        super::PasswordHashError::InvalidParameters.to_string(),
+        PasswordHashError::InvalidParameters.to_string(),
         "invalid Argon2 parameters"
     );
     assert_eq!(
-        super::PasswordHashError::HashFailed.to_string(),
+        PasswordHashError::HashFailed.to_string(),
         "password hashing failed"
     );
     assert_eq!(
-        super::PasswordHashError::InvalidStoredHash.to_string(),
+        PasswordHashError::InvalidStoredHash.to_string(),
         "stored password hash is invalid"
     );
 }

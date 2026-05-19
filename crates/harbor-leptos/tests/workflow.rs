@@ -1,18 +1,20 @@
+//! Auth workflow integration tests for `harbor-leptos`.
+
 use harbor_core::{
-    Argon2Params, Argon2PasswordHasher, AuthError, AuthErrorCode, ChallengeDelivery, ChallengeId,
-    HmacSecretKey, PasswordPolicy, PasswordSignInInput, PasswordSignUpInput, RedirectPath,
-    RequestPasswordResetInput, ResetPasswordInput, RetryBudget, SecretToken, SystemClock,
-    SystemSecretGenerator, UnixTimestampMicros,
+    Argon2Params, Argon2PasswordHasher, AuthError, AuthErrorCode, AuthService, ChallengeDelivery,
+    ChallengeId, HmacSecretKey, PasswordPolicy, PasswordSignInInput, PasswordSignUpInput,
+    RedirectPath, RequestPasswordResetInput, ResetPasswordInput, RetryBudget, SecretToken,
+    SystemClock, SystemSecretGenerator, UnixTimestampMicros,
 };
 use harbor_email::RecordingMailer;
-use harbor_sqlx::{SqliteAuthStore, SqliteStoreOptions};
-
-use super::*;
-use crate::{
-    AuthLinkQuery, AuthRateLimits, CookieDefaults, Harbor, build_csrf_cookie,
-    handle_confirm_email_link, handle_email_link_signin, handle_reset_password_link,
-    issue_csrf_token,
+use harbor_leptos::{
+    AuthLinkQuery, AuthRateLimits, CookieDefaults, CsrfRequest, Harbor, HarborConfig,
+    build_csrf_cookie, current_session, handle_confirm_email_link, handle_email_link_signin,
+    handle_reset_password_link, issue_csrf_token, request_email_code_signin, request_email_signin,
+    request_password_reset, reset_password, sign_out, signin_with_password, signup_with_password,
+    verify_email_code,
 };
+use harbor_sqlx::{SqliteAuthStore, SqliteStoreOptions};
 
 type TestService = AuthService<SqliteAuthStore, SystemClock, SystemSecretGenerator>;
 

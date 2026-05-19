@@ -70,42 +70,12 @@ impl Default for DeterministicSecretGenerator {
 
 impl SecretGenerator for DeterministicSecretGenerator {
     fn fill_bytes(&self, dest: &mut [u8]) -> Result<(), RandomError> {
-        let mut value = self.counter.fetch_add(1, Ordering::Relaxed);
+        let increment = u64::try_from(dest.len()).map_err(|_error| RandomError::SystemRandom)?;
+        let mut value = self.counter.fetch_add(increment, Ordering::Relaxed);
         for byte in dest {
             *byte = value.to_le_bytes()[0];
             value = value.wrapping_add(1);
         }
         Ok(())
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use harbor_core::{SecretGenerator, new_user_id};
-
-    use super::DeterministicSecretGenerator;
-
-    #[test]
-    fn deterministic_generator_produces_repeatable_but_advancing_values() {
-        let generator = DeterministicSecretGenerator::new();
-
-        let first = new_user_id(&generator);
-        let second = new_user_id(&generator);
-
-        assert!(first.is_ok());
-        assert!(second.is_ok());
-        assert_ne!(
-            first.map(|id| id.to_string()),
-            second.map(|id| id.to_string())
-        );
-    }
-
-    #[test]
-    fn deterministic_generator_fills_bytes() {
-        let generator = DeterministicSecretGenerator::new();
-        let mut bytes = [0_u8; 4];
-
-        assert!(generator.fill_bytes(&mut bytes).is_ok());
-        assert_eq!(bytes, [0, 1, 2, 3]);
     }
 }

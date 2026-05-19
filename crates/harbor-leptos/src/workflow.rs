@@ -71,12 +71,13 @@ where
     )
     .await?;
     let signup = service.sign_up_with_password(input).await?;
+    let harbor_core::PasswordSignUpOutput { user, email } = signup;
     let challenge = service
         .create_email_challenge(harbor_core::EmailChallengeInput {
             purpose: ChallengePurpose::SignupConfirmation,
             delivery: ChallengeDelivery::MagicLink,
-            email: signup.email.email_original.clone(),
-            user_id: Some(signup.user.id),
+            email: email.email_original,
+            user_id: Some(user.id),
             redirect_path: None,
         })
         .await?;
@@ -440,9 +441,10 @@ async fn send_challenge_email<M: AuthMailer>(
     challenge: harbor_core::EmailChallengeOutput,
     route: &str,
 ) -> Result<(), AuthError> {
-    let action_url = match challenge.challenge.delivery {
-        ChallengeDelivery::MagicLink | ChallengeDelivery::Both => {
-            Some(challenge_action_url(config, route, &challenge)?)
+    let harbor_core::EmailChallengeOutput { challenge, secret } = challenge;
+    let action_url = match challenge.delivery {
+        ChallengeDelivery::MagicLink => {
+            Some(challenge_action_url(config, route, &challenge, &secret)?)
         }
         ChallengeDelivery::OtpCode => None,
         _ => {
@@ -452,8 +454,8 @@ async fn send_challenge_email<M: AuthMailer>(
             ));
         }
     };
-    let otp_code = match challenge.challenge.delivery {
-        ChallengeDelivery::OtpCode | ChallengeDelivery::Both => Some(challenge.secret.clone()),
+    let otp_code = match challenge.delivery {
+        ChallengeDelivery::OtpCode => Some(secret),
         ChallengeDelivery::MagicLink => None,
         _ => {
             return Err(AuthError::with_detail(
@@ -462,13 +464,13 @@ async fn send_challenge_email<M: AuthMailer>(
             ));
         }
     };
-    let recipient = EmailRecipient::parse(challenge.challenge.email_canonical.as_str())?;
+    let recipient = EmailRecipient::parse(challenge.email_canonical.as_str())?;
     let email = render_challenge_email_with_renderer(
         ChallengeEmailInput {
-            purpose: challenge.challenge.purpose,
-            delivery: challenge.challenge.delivery,
+            purpose: challenge.purpose,
+            delivery: challenge.delivery,
             to: recipient,
-            challenge_id: challenge.challenge.id,
+            challenge_id: challenge.id,
             action_url,
             otp_code,
         },
@@ -484,21 +486,19 @@ async fn send_challenge_email<M: AuthMailer>(
 fn challenge_action_url(
     config: &HarborConfig,
     route: &str,
-    challenge: &harbor_core::EmailChallengeOutput,
+    challenge: &harbor_core::ChallengeRecord,
+    secret: &SecretToken,
 ) -> Result<SecretUrl, AuthError> {
     let mut url = format!(
         "{}{}?challenge={}&token={}",
         config.public_base_url().as_str(),
         route,
-        challenge.challenge.id.as_str(),
-        challenge.secret.expose_secret()
+        challenge.id.as_str(),
+        secret.expose_secret()
     );
-    if let Some(redirect_path) = challenge.challenge.redirect_path.as_ref() {
+    if let Some(redirect_path) = challenge.redirect_path.as_ref() {
         url.push_str("&redirect=");
         url.push_str(percent_encode_query(redirect_path.as_str()).as_str());
     }
     SecretUrl::try_new(url).map_err(AuthError::from)
 }
-
-#[cfg(test)]
-mod tests;

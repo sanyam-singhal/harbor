@@ -109,6 +109,3 @@ pub fn constant_time_token_hash_eq(left: &TokenHash, right: &TokenHash) -> bool 
     left.as_bytes().len() == right.as_bytes().len()
         && left.as_bytes().ct_eq(right.as_bytes()).unwrap_u8() == 1
 }
-
-#[cfg(test)]
-mod tests;
