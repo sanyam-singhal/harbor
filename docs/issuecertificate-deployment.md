@@ -22,17 +22,17 @@ Reverse proxy requirements:
 Local smoke check:
 
 ```sh
-HARBOR_DEMO_SMOKE=1 cargo run -p harbor-demo
+HARBOR_HEADLESS_DEMO_SMOKE=1 cargo run -p harbor-headless-demo
 ```
 
 Live Resend smoke check:
 
 ```sh
 HARBOR_EMAIL_MODE=resend \
-HARBOR_DEMO_SMOKE=1 \
-cargo run -p harbor-demo --features email-resend
+HARBOR_HEADLESS_DEMO_SMOKE=1 \
+cargo run -p harbor-headless-demo --features email-resend
 ```
 
-Keep `HARBOR_DEMO_BROWSER_SMOKE=1` for local browser automation. The live
+Keep `HARBOR_HEADLESS_DEMO_BROWSER_SMOKE=1` for local browser automation. The live
 Resend smoke mirrors messages into the in-memory recorder only so the
 deterministic flow can continue without asking a human to paste every link.

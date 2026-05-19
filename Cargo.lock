@@ -1015,22 +1015,22 @@ dependencies = [
 ]
 
 [[package]]
-name = "harbor-demo"
+name = "harbor-email"
+version = "0.1.0"
+dependencies = [
+ "harbor-core",
+ "resend-rs",
+ "tokio",
+]
+
+[[package]]
+name = "harbor-headless-demo"
 version = "0.1.0"
 dependencies = [
  "harbor-core",
  "harbor-email",
  "harbor-leptos",
  "harbor-sqlx",
- "tokio",
-]
-
-[[package]]
-name = "harbor-email"
-version = "0.1.0"
-dependencies = [
- "harbor-core",
- "resend-rs",
  "tokio",
 ]
 

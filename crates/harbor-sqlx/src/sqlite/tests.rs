@@ -1,17 +1,16 @@
 use harbor_core::{
-    AppendAuthEventInput, Argon2Params, Argon2PasswordHasher, AuthErrorCode, AuthEventId,
-    AuthEventKind, AuthEventStore, AuthService, ChallengeDelivery, ChallengeId, ChallengePurpose,
-    ChallengeStore, CreateChallengeInput, CreateSessionInput, CreateUserEmailInput,
-    CreateUserInput, DeleteExpiredSessionsInput, EmailAddress, FindEmailByCanonicalInput,
-    GetChallengeInput, GetPasswordCredentialInput, GetSessionInput, GetUserInput, HmacSecretKey,
-    IncrementChallengeAttemptsInput, IncrementRateLimitInput, InsertPasswordInput,
-    MarkEmailVerifiedInput, PasswordCredentialStore, PasswordHashString, PasswordPolicy,
-    RandomError, RateLimitStore, RedirectPath, RetryBudget, RevokeSessionInput,
+    AppendAuthEventInput, AuthErrorCode, AuthEventId, AuthEventKind, AuthEventStore, AuthService,
+    ChallengeDelivery, ChallengeId, ChallengePurpose, ChallengeStore, CreateChallengeInput,
+    CreateSessionInput, CreateUserEmailInput, CreateUserInput, DeleteExpiredSessionsInput,
+    EmailAddress, FindEmailByCanonicalInput, GetChallengeInput, GetPasswordCredentialInput,
+    GetSessionInput, GetUserInput, HmacSecretKey, IncrementChallengeAttemptsInput,
+    IncrementRateLimitInput, InsertPasswordInput, MarkEmailVerifiedInput, PasswordCredentialStore,
+    PasswordHashString, RandomError, RateLimitStore, RedirectPath, RetryBudget, RevokeSessionInput,
     RevokeUserSessionsInput, SecretGenerator, SecretHashPurpose, SecretToken, SessionId,
     SessionStore, StoreErrorCode, TokenHash, UnixTimestampMicros, UpdateSessionLastSeenInput,
     UserEmailId, UserEmailStore, UserId, UserStore, hash_secret_token,
 };
-use harbor_test_support::{DeterministicSecretGenerator, FixedClock};
+use harbor_test_support::{FixedClock, TempSqliteDatabase, TestAuthServiceBuilder};
 use sqlx::Row;
 use sqlx::sqlite::SqlitePoolOptions;
 use std::sync::Arc;
@@ -30,6 +29,51 @@ async fn migrated_store() -> Result<SqliteAuthStore, Box<dyn std::error::Error>>
         SqliteAuthStore::connect_and_migrate("sqlite::memory:", SqliteStoreOptions::in_memory())
             .await?,
     )
+}
+
+fn test_service(
+    store: SqliteAuthStore,
+) -> Result<
+    harbor_test_support::DeterministicAuthService<SqliteAuthStore>,
+    Box<dyn std::error::Error>,
+> {
+    test_service_at(store, now())
+}
+
+fn test_service_at(
+    store: SqliteAuthStore,
+    now: UnixTimestampMicros,
+) -> Result<
+    harbor_test_support::DeterministicAuthService<SqliteAuthStore>,
+    Box<dyn std::error::Error>,
+> {
+    Ok(TestAuthServiceBuilder::new(store).with_now(now).finish()?)
+}
+
+fn test_service_with_key_at(
+    store: SqliteAuthStore,
+    hmac_key: &HmacSecretKey,
+    now: UnixTimestampMicros,
+) -> Result<
+    harbor_test_support::DeterministicAuthService<SqliteAuthStore>,
+    Box<dyn std::error::Error>,
+> {
+    Ok(TestAuthServiceBuilder::new(store)
+        .with_now(now)
+        .with_hmac_key(hmac_key.expose_secret().to_vec())
+        .finish()?)
+}
+
+fn test_service_with_generator<G>(
+    store: SqliteAuthStore,
+    generator: G,
+) -> Result<AuthService<SqliteAuthStore, FixedClock, G>, Box<dyn std::error::Error>>
+where
+    G: SecretGenerator,
+{
+    Ok(TestAuthServiceBuilder::new(store)
+        .with_generator(generator)
+        .finish()?)
 }
 
 fn user_id() -> Result<UserId, harbor_core::DomainError> {
@@ -99,6 +143,19 @@ async fn connects_migrates_and_checks_foreign_keys() -> Result<(), Box<dyn std::
 
     store.verify_foreign_keys().await?;
     assert_eq!(format!("{store:?}"), "SqliteAuthStore { pool: [REDACTED] }");
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn connects_to_temp_sqlite_fixture() -> Result<(), Box<dyn std::error::Error>> {
+    let fixture = TempSqliteDatabase::new("sqlx-store")?;
+    let store =
+        SqliteAuthStore::connect_and_migrate(fixture.database_url(), SqliteStoreOptions::default())
+            .await?;
+
+    store.verify_foreign_keys().await?;
+    assert!(fixture.root().exists());
+    assert!(fixture.database_path().exists());
     Ok(())
 }
 
@@ -762,16 +819,7 @@ async fn sqlite_store_satisfies_shared_auth_store_contracts()
 async fn password_service_signup_signin_current_session_and_signout()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = migrated_store().await?;
-    let service = AuthService::new(
-        store.clone(),
-        FixedClock::new(now()),
-        DeterministicSecretGenerator::new(),
-        HmacSecretKey::try_new(vec![9; 32])?,
-        Argon2PasswordHasher::new(
-            PasswordPolicy::try_new(8, 128)?,
-            Argon2Params::try_new(32, 1, 1)?,
-        ),
-    );
+    let service = test_service(store.clone())?;
 
     let signup = service
         .sign_up_with_password(harbor_core::PasswordSignUpInput {

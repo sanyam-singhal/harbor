@@ -5,7 +5,7 @@ members = [
     "crates/harbor-leptos",
     "crates/harbor-sqlx",
     "crates/harbor-test-support",
-    "crates/harbor-demo",
+    "crates/harbor-headless-demo",
 ]
 resolver = "3"
 

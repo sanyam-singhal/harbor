@@ -1,4 +1,4 @@
-//! Demonstration application for Harbor.
+//! Headless smoke harness for Harbor.
 
 use std::env;
 
@@ -22,7 +22,7 @@ use browser::{
     run_browser_smoke_server,
 };
 
-const DEFAULT_DATABASE_URL: &str = "sqlite://harbor-demo.sqlite?mode=rwc";
+const DEFAULT_DATABASE_URL: &str = "sqlite://harbor-headless-demo.sqlite?mode=rwc";
 const DEFAULT_PUBLIC_BASE_URL: &str = "http://localhost:3000";
 const DEFAULT_DEMO_ADDR: &str = "127.0.0.1:3000";
 
@@ -49,7 +49,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .finish()?;
 
     println!(
-        "Harbor demo initialized: base_url={}, session_cookie={}",
+        "Harbor headless demo initialized: base_url={}, session_cookie={}",
         harbor.config().public_base_url(),
         harbor
             .config()
@@ -57,7 +57,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .session_cookie_name()
             .as_str()
     );
-    println!("Demo mail mode: {}", mailer.mode_name());
+    println!("Headless demo mail mode: {}", mailer.mode_name());
     if settings.run_smoke {
         run_recording_smoke(
             store.clone(),
@@ -68,7 +68,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             settings.smoke_email.clone(),
         )
         .await?;
-        println!("Demo auth smoke: ok");
+        println!("Headless demo auth smoke: ok");
     }
     if settings.run_browser_smoke {
         let service = auth_service(store, settings.hmac_key)?;
@@ -111,14 +111,10 @@ impl DemoSettings {
                 .map(|value| value.into_bytes())
                 .unwrap_or_else(|_error| vec![42; 32]),
             email_mode: DemoEmailMode::from_env()?,
-            smoke_email: env::var("HARBOR_DEMO_SMOKE_EMAIL").ok(),
-            run_smoke: env::var("HARBOR_DEMO_SMOKE")
-                .map(|value| value == "1" || value == "true")
-                .unwrap_or(false),
-            run_browser_smoke: env::var("HARBOR_DEMO_BROWSER_SMOKE")
-                .map(|value| value == "1" || value == "true")
-                .unwrap_or(false),
-            demo_addr: env::var("HARBOR_DEMO_ADDR")
+            smoke_email: env::var("HARBOR_HEADLESS_DEMO_SMOKE_EMAIL").ok(),
+            run_smoke: env_bool("HARBOR_HEADLESS_DEMO_SMOKE"),
+            run_browser_smoke: env_bool("HARBOR_HEADLESS_DEMO_BROWSER_SMOKE"),
+            demo_addr: env::var("HARBOR_HEADLESS_DEMO_ADDR")
                 .unwrap_or_else(|_error| DEFAULT_DEMO_ADDR.to_owned()),
         })
     }
@@ -128,6 +124,12 @@ impl DemoSettings {
             .clone()
             .unwrap_or_else(|| display_host(&self.public_base_url).to_owned())
     }
+}
+
+fn env_bool(name: &str) -> bool {
+    env::var(name)
+        .map(|value| value == "1" || value == "true")
+        .unwrap_or(false)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -181,8 +183,7 @@ impl DemoMailer {
     #[cfg(not(feature = "email-resend"))]
     fn resend(_recording: RecordingMailer) -> Result<Self, Box<dyn std::error::Error>> {
         Err(
-            "HARBOR_EMAIL_MODE=resend requires `cargo run -p harbor-demo --features email-resend`"
-                .into(),
+            "HARBOR_EMAIL_MODE=resend requires `cargo run -p harbor-headless-demo --features email-resend`".into(),
         )
     }
 
@@ -361,10 +362,10 @@ fn smoke_email_for_run(
         return Ok(format!("demo-{timestamp_micros}@example.com"));
     };
     let Some((local, domain)) = email.split_once('@') else {
-        return Err("HARBOR_DEMO_SMOKE_EMAIL must contain exactly one @".into());
+        return Err("HARBOR_HEADLESS_DEMO_SMOKE_EMAIL must contain exactly one @".into());
     };
     if local.is_empty() || domain.is_empty() || domain.contains('@') {
-        return Err("HARBOR_DEMO_SMOKE_EMAIL must be a valid email-like address".into());
+        return Err("HARBOR_HEADLESS_DEMO_SMOKE_EMAIL must be a valid email-like address".into());
     }
     Ok(format!("{local}+harbor{timestamp_micros}@{domain}"))
 }

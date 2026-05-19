@@ -2,13 +2,26 @@
 //!
 //! Shared fixtures and contract-test helpers live here so implementation crates
 //! can be tested consistently.
+//!
+//! This crate intentionally depends only on `harbor-core`. Provider or
+//! integration fakes belong beside the traits they implement, such as
+//! `harbor_email::RecordingMailer` for the email boundary.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use harbor_core::{RandomError, SecretGenerator, UnixTimestampMicros};
 
+mod error;
+mod fixtures;
+mod ids;
+mod service;
 pub mod store_contracts;
+
+pub use error::TestSupportError;
+pub use fixtures::TempSqliteDatabase;
+pub use ids::TestIdFactory;
+pub use service::{DeterministicAuthService, TestAuthServiceBuilder};
 
 /// Version of the `harbor-test-support` crate.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

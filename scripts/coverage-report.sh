@@ -43,7 +43,7 @@ feature_args=()
 output_dir=".local/coverage"
 fail_under_lines="${HARBOR_COVERAGE_FAIL_UNDER_LINES:-90}"
 fail_under_regions="${HARBOR_COVERAGE_FAIL_UNDER_REGIONS:-90}"
-ignore_filename_regex="${HARBOR_COVERAGE_IGNORE_FILENAME_REGEX:-harbor-demo/src/.*|harbor-test-support/src/.*}"
+ignore_filename_regex="${HARBOR_COVERAGE_IGNORE_FILENAME_REGEX:-harbor-headless-demo/src/.*|harbor-test-support/src/.*}"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in

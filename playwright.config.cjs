@@ -11,14 +11,14 @@ module.exports = defineConfig({
     trace: "retain-on-failure"
   },
   webServer: {
-    command: "cargo run -p harbor-demo",
+    command: "cargo run -p harbor-headless-demo",
     url: "http://127.0.0.1:39211/healthz",
     timeout: 30_000,
     reuseExistingServer: false,
     env: {
-      HARBOR_DEMO_BROWSER_SMOKE: "1",
+      HARBOR_HEADLESS_DEMO_BROWSER_SMOKE: "1",
       HARBOR_DATABASE_URL: "sqlite::memory:",
-      HARBOR_DEMO_ADDR: "127.0.0.1:39211",
+      HARBOR_HEADLESS_DEMO_ADDR: "127.0.0.1:39211",
       HARBOR_PUBLIC_BASE_URL: "http://127.0.0.1:39211",
       HARBOR_HMAC_KEY: "playwright-recording-smoke-key-32b"
     }

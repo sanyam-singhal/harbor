@@ -4,16 +4,7 @@ use super::*;
 async fn email_challenge_service_rejects_bad_secret_and_consumed_reuse()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = migrated_store().await?;
-    let service = AuthService::new(
-        store.clone(),
-        FixedClock::new(now()),
-        DeterministicSecretGenerator::new(),
-        HmacSecretKey::try_new(vec![9; 32])?,
-        Argon2PasswordHasher::new(
-            PasswordPolicy::try_new(8, 128)?,
-            Argon2Params::try_new(32, 1, 1)?,
-        ),
-    );
+    let service = test_service(store.clone())?;
 
     let challenge = service
         .create_email_challenge(harbor_core::EmailChallengeInput {
@@ -88,16 +79,7 @@ async fn email_challenge_service_rejects_bad_secret_and_consumed_reuse()
 async fn service_negative_paths_are_enumeration_safe() -> Result<(), Box<dyn std::error::Error>> {
     let store = migrated_store().await?;
     let hmac_key = HmacSecretKey::try_new(vec![9; 32])?;
-    let service = AuthService::new(
-        store.clone(),
-        FixedClock::new(now()),
-        DeterministicSecretGenerator::new(),
-        hmac_key.clone(),
-        Argon2PasswordHasher::new(
-            PasswordPolicy::try_new(8, 128)?,
-            Argon2Params::try_new(32, 1, 1)?,
-        ),
-    );
+    let service = test_service_with_key_at(store.clone(), &hmac_key, now())?;
 
     let invalid_signup = service
         .sign_up_with_password(harbor_core::PasswordSignUpInput {
@@ -182,16 +164,11 @@ async fn service_negative_paths_are_enumeration_safe() -> Result<(), Box<dyn std
             redirect_path: None,
         })
         .await?;
-    let late_service = AuthService::new(
+    let late_service = test_service_with_key_at(
         store.clone(),
-        FixedClock::new(UnixTimestampMicros::try_new(11 * 60 * 1_000_000)?),
-        DeterministicSecretGenerator::new(),
-        hmac_key.clone(),
-        Argon2PasswordHasher::new(
-            PasswordPolicy::try_new(8, 128)?,
-            Argon2Params::try_new(32, 1, 1)?,
-        ),
-    );
+        &hmac_key,
+        UnixTimestampMicros::try_new(11 * 60 * 1_000_000)?,
+    )?;
     let expired = late_service
         .verify_email_challenge(harbor_core::VerifyChallengeInput {
             challenge_id: expiring.challenge.id,
@@ -285,17 +262,7 @@ async fn service_rejects_expiry_overflow_without_writing() -> Result<(), Box<dyn
 {
     let store = migrated_store().await?;
     let hmac_key = HmacSecretKey::try_new(vec![9; 32])?;
-    let hasher = Argon2PasswordHasher::new(
-        PasswordPolicy::try_new(8, 128)?,
-        Argon2Params::try_new(32, 1, 1)?,
-    );
-    let setup_service = AuthService::new(
-        store.clone(),
-        FixedClock::new(now()),
-        DeterministicSecretGenerator::new(),
-        hmac_key.clone(),
-        hasher,
-    );
+    let setup_service = test_service_with_key_at(store.clone(), &hmac_key, now())?;
     let signup = setup_service
         .sign_up_with_password(harbor_core::PasswordSignUpInput {
             email: "overflow@example.com".to_owned(),
@@ -319,13 +286,11 @@ async fn service_rejects_expiry_overflow_without_writing() -> Result<(), Box<dyn
         })
         .await?;
 
-    let late_service = AuthService::new(
+    let late_service = test_service_with_key_at(
         store.clone(),
-        FixedClock::new(UnixTimestampMicros::try_new(i64::MAX - 1)?),
-        DeterministicSecretGenerator::new(),
-        hmac_key,
-        hasher,
-    );
+        &hmac_key,
+        UnixTimestampMicros::try_new(i64::MAX - 1)?,
+    )?;
     let challenge_overflow = late_service
         .create_email_challenge(harbor_core::EmailChallengeInput {
             purpose: ChallengePurpose::EmailSignIn,
@@ -354,18 +319,10 @@ async fn service_rejects_expiry_overflow_without_writing() -> Result<(), Box<dyn
     };
     assert_eq!(session_overflow.code(), AuthErrorCode::Internal);
 
-    let absolute_overflow_service = AuthService::new(
+    let absolute_overflow_service = test_service_at(
         store.clone(),
-        FixedClock::new(UnixTimestampMicros::try_new(
-            i64::MAX - ABSOLUTE_SESSION_MICROS + 1,
-        )?),
-        DeterministicSecretGenerator::new(),
-        HmacSecretKey::try_new(vec![9; 32])?,
-        Argon2PasswordHasher::new(
-            PasswordPolicy::try_new(8, 128)?,
-            Argon2Params::try_new(32, 1, 1)?,
-        ),
-    );
+        UnixTimestampMicros::try_new(i64::MAX - ABSOLUTE_SESSION_MICROS + 1)?,
+    )?;
     let absolute_overflow = absolute_overflow_service
         .sign_in_with_password(harbor_core::PasswordSignInInput {
             email: "overflow@example.com".to_owned(),
@@ -386,17 +343,7 @@ async fn service_maps_secret_generation_failures_to_internal_errors()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = migrated_store().await?;
     let hmac_key = HmacSecretKey::try_new(vec![9; 32])?;
-    let hasher = Argon2PasswordHasher::new(
-        PasswordPolicy::try_new(8, 128)?,
-        Argon2Params::try_new(32, 1, 1)?,
-    );
-    let setup_service = AuthService::new(
-        store.clone(),
-        FixedClock::new(now()),
-        DeterministicSecretGenerator::new(),
-        hmac_key.clone(),
-        hasher,
-    );
+    let setup_service = test_service_with_key_at(store.clone(), &hmac_key, now())?;
     let signup = setup_service
         .sign_up_with_password(harbor_core::PasswordSignUpInput {
             email: "generator-failure@example.com".to_owned(),
@@ -420,13 +367,7 @@ async fn service_maps_secret_generation_failures_to_internal_errors()
         })
         .await?;
 
-    let failing_service = AuthService::new(
-        store.clone(),
-        FixedClock::new(now()),
-        FailingSecretGenerator,
-        hmac_key,
-        hasher,
-    );
+    let failing_service = test_service_with_generator(store.clone(), FailingSecretGenerator)?;
     let signup_failure = failing_service
         .sign_up_with_password(harbor_core::PasswordSignUpInput {
             email: "new-generator-failure@example.com".to_owned(),
@@ -467,16 +408,8 @@ async fn service_maps_secret_generation_failures_to_internal_errors()
     };
     assert_eq!(session_failure.code(), AuthErrorCode::Internal);
 
-    let fail_after_first_service = AuthService::new(
-        store.clone(),
-        FixedClock::new(now()),
-        FailAfterFirstSecretGenerator::new(),
-        HmacSecretKey::try_new(vec![9; 32])?,
-        Argon2PasswordHasher::new(
-            PasswordPolicy::try_new(8, 128)?,
-            Argon2Params::try_new(32, 1, 1)?,
-        ),
-    );
+    let fail_after_first_service =
+        test_service_with_generator(store.clone(), FailAfterFirstSecretGenerator::new())?;
     let challenge_id_failure = fail_after_first_service
         .create_email_challenge(harbor_core::EmailChallengeInput {
             purpose: ChallengePurpose::EmailSignIn,
@@ -492,16 +425,8 @@ async fn service_maps_secret_generation_failures_to_internal_errors()
     };
     assert_eq!(challenge_id_failure.code(), AuthErrorCode::Internal);
 
-    let fail_after_first_service = AuthService::new(
-        store,
-        FixedClock::new(now()),
-        FailAfterFirstSecretGenerator::new(),
-        HmacSecretKey::try_new(vec![9; 32])?,
-        Argon2PasswordHasher::new(
-            PasswordPolicy::try_new(8, 128)?,
-            Argon2Params::try_new(32, 1, 1)?,
-        ),
-    );
+    let fail_after_first_service =
+        test_service_with_generator(store, FailAfterFirstSecretGenerator::new())?;
     let session_id_failure = fail_after_first_service
         .sign_in_with_password(harbor_core::PasswordSignInInput {
             email: "generator-failure@example.com".to_owned(),
@@ -521,16 +446,7 @@ async fn service_maps_secret_generation_failures_to_internal_errors()
 async fn email_challenge_signin_creates_verified_account_and_session()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = migrated_store().await?;
-    let service = AuthService::new(
-        store,
-        FixedClock::new(now()),
-        DeterministicSecretGenerator::new(),
-        HmacSecretKey::try_new(vec![9; 32])?,
-        Argon2PasswordHasher::new(
-            PasswordPolicy::try_new(8, 128)?,
-            Argon2Params::try_new(32, 1, 1)?,
-        ),
-    );
+    let service = test_service(store)?;
     let challenge = service
         .create_email_challenge(harbor_core::EmailChallengeInput {
             purpose: ChallengePurpose::EmailSignIn,
@@ -568,16 +484,7 @@ async fn passwordless_email_accounts_do_not_receive_password_reset()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = migrated_store().await?;
     let hmac_key = HmacSecretKey::try_new(vec![9; 32])?;
-    let service = AuthService::new(
-        store.clone(),
-        FixedClock::new(now()),
-        DeterministicSecretGenerator::new(),
-        hmac_key.clone(),
-        Argon2PasswordHasher::new(
-            PasswordPolicy::try_new(8, 128)?,
-            Argon2Params::try_new(32, 1, 1)?,
-        ),
-    );
+    let service = test_service_with_key_at(store.clone(), &hmac_key, now())?;
     let signin_challenge = service
         .create_email_challenge(harbor_core::EmailChallengeInput {
             purpose: ChallengePurpose::EmailSignIn,
@@ -642,16 +549,7 @@ async fn passwordless_email_accounts_do_not_receive_password_reset()
 async fn email_challenge_signin_verifies_existing_unverified_account()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = migrated_store().await?;
-    let service = AuthService::new(
-        store,
-        FixedClock::new(now()),
-        DeterministicSecretGenerator::new(),
-        HmacSecretKey::try_new(vec![9; 32])?,
-        Argon2PasswordHasher::new(
-            PasswordPolicy::try_new(8, 128)?,
-            Argon2Params::try_new(32, 1, 1)?,
-        ),
-    );
+    let service = test_service(store)?;
     let signup = service
         .sign_up_with_password(harbor_core::PasswordSignUpInput {
             email: "existing-link@example.com".to_owned(),
@@ -692,16 +590,7 @@ async fn email_challenge_signin_verifies_existing_unverified_account()
 async fn email_challenge_signin_reuses_existing_verified_account()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = migrated_store().await?;
-    let service = AuthService::new(
-        store,
-        FixedClock::new(now()),
-        DeterministicSecretGenerator::new(),
-        HmacSecretKey::try_new(vec![9; 32])?,
-        Argon2PasswordHasher::new(
-            PasswordPolicy::try_new(8, 128)?,
-            Argon2Params::try_new(32, 1, 1)?,
-        ),
-    );
+    let service = test_service(store)?;
     let signup = service
         .sign_up_with_password(harbor_core::PasswordSignUpInput {
             email: "verified-link@example.com".to_owned(),
@@ -750,16 +639,7 @@ async fn email_challenge_signin_reuses_existing_verified_account()
 #[tokio::test(flavor = "current_thread")]
 async fn password_reset_rejects_version_overflow() -> Result<(), Box<dyn std::error::Error>> {
     let store = migrated_store().await?;
-    let service = AuthService::new(
-        store.clone(),
-        FixedClock::new(now()),
-        DeterministicSecretGenerator::new(),
-        HmacSecretKey::try_new(vec![9; 32])?,
-        Argon2PasswordHasher::new(
-            PasswordPolicy::try_new(8, 128)?,
-            Argon2Params::try_new(32, 1, 1)?,
-        ),
-    );
+    let service = test_service(store.clone())?;
     let signup = service
         .sign_up_with_password(harbor_core::PasswordSignUpInput {
             email: "version-overflow@example.com".to_owned(),
@@ -818,16 +698,7 @@ async fn password_reset_rejects_version_overflow() -> Result<(), Box<dyn std::er
 async fn password_reset_service_is_enumeration_resistant_and_revokes_sessions()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = migrated_store().await?;
-    let service = AuthService::new(
-        store,
-        FixedClock::new(now()),
-        DeterministicSecretGenerator::new(),
-        HmacSecretKey::try_new(vec![9; 32])?,
-        Argon2PasswordHasher::new(
-            PasswordPolicy::try_new(8, 128)?,
-            Argon2Params::try_new(32, 1, 1)?,
-        ),
-    );
+    let service = test_service(store)?;
 
     let signup = service
         .sign_up_with_password(harbor_core::PasswordSignUpInput {

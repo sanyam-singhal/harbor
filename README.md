@@ -27,7 +27,9 @@ library surface is split by responsibility:
   `email-resend` feature.
 - `harbor-leptos`: Leptos config, context, components, cookie/CSRF helpers,
   Axum link responses, and server-callable workflow helpers.
-- `harbor-demo`: SQLite demo/smoke harness for local and VPS dogfooding.
+- `harbor-test-support`: deterministic fixtures, service builders, SQLite URL
+  fixtures, and shared store contract tests.
+- `harbor-headless-demo`: SQLite demo/smoke harness for local and VPS dogfooding.
 
 `harbor-leptos` intentionally exposes generic async workflow functions instead
 of hard-coding app-specific `#[server]` functions. A Leptos app can wrap those
@@ -45,13 +47,13 @@ scripts/check.sh
 Run the deterministic demo smoke without live email:
 
 ```sh
-HARBOR_DEMO_SMOKE=1 cargo run -p harbor-demo
+HARBOR_HEADLESS_DEMO_SMOKE=1 cargo run -p harbor-headless-demo
 ```
 
 Run the browser smoke server with recording email shortcuts:
 
 ```sh
-HARBOR_DEMO_BROWSER_SMOKE=1 cargo run -p harbor-demo
+HARBOR_HEADLESS_DEMO_BROWSER_SMOKE=1 cargo run -p harbor-headless-demo
 ```
 
 Enable live Resend delivery only when explicitly dogfooding against a verified
@@ -59,10 +61,10 @@ sender:
 
 ```sh
 HARBOR_EMAIL_MODE=resend \
-HARBOR_DEMO_SMOKE=1 \
+HARBOR_HEADLESS_DEMO_SMOKE=1 \
 RESEND_API_KEY="$RESEND_API_KEY" \
 HARBOR_EMAIL_FROM="Harbor <auth@issuecertificate.com>" \
-cargo run -p harbor-demo --features email-resend
+cargo run -p harbor-headless-demo --features email-resend
 ```
 
 See [`docs/configuration.md`](docs/configuration.md) for environment variables,

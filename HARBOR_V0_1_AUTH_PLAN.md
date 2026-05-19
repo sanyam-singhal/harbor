@@ -182,6 +182,7 @@ crates/
   harbor-sqlx/
   harbor-email/
   harbor-leptos/
+  harbor-headless-demo/
   harbor-demo/
   harbor-test-support/
 docs/
@@ -230,6 +231,13 @@ scripts/
 - Route guards and session context.
 - No SQL queries directly.
 
+`harbor-headless-demo`
+
+- Temporary headless SQLite smoke harness for local and VPS dogfooding.
+- Exercises the auth flows without claiming to be the real Leptos showcase app.
+- Should remain small or be retired after the Leptos demo app covers the same
+  smoke paths.
+
 `harbor-demo`
 
 - Leptos app showcasing Harbor on `issuecertificate.com`.
@@ -241,8 +249,12 @@ scripts/
 `harbor-test-support`
 
 - SQLite temp DB fixtures.
-- Fake mailer.
+- Core-only deterministic fixtures and service builders.
+- Mailer fakes live beside the email port; `harbor_email::RecordingMailer`
+  remains the canonical fake mailer.
 - Test clock.
+- Test id, email, token-hash, and request-fingerprint factories.
+- Shared auth-store contract tests for future SQL drivers.
 - Deterministic token generator for tests only.
 - Contract test macros/functions.
 
@@ -800,7 +812,8 @@ stage.
 
 - Create workspace `Cargo.toml`.
 - Add crates: `harbor-core`, `harbor-sqlx`, `harbor-email`,
-  `harbor-leptos`, `harbor-demo`, `harbor-test-support`.
+  `harbor-leptos`, `harbor-headless-demo`, `harbor-demo`,
+  `harbor-test-support`.
 - Add workspace lints from `AGENTS.md`.
 - Add `unsafe_code = "forbid"`.
 - Add initial `README.md`.

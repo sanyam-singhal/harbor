@@ -25,7 +25,7 @@ pub(crate) async fn run_browser_smoke_server(
     config: harbor_leptos::HarborConfig,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let listener = TcpListener::bind(addr)?;
-    println!("Harbor demo browser smoke listening: http://{addr}");
+    println!("Harbor headless demo browser smoke listening: http://{addr}");
     for stream in listener.incoming() {
         let mut stream = stream?;
         let response = match read_http_request(&mut stream) {

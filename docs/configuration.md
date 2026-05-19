@@ -9,14 +9,14 @@ code changes or secret leakage.
 
 - Workspace default features keep provider delivery off.
 - `harbor-email/email-resend` enables `ResendMailer`.
-- `harbor-demo/email-resend` forwards to `harbor-email/email-resend`.
+- `harbor-headless-demo/email-resend` forwards to `harbor-email/email-resend`.
 - `harbor-leptos/axum` enables Axum response helpers for auth link routes.
 
 ## Demo Environment
 
 | Variable | Required | Default | Notes |
 | --- | --- | --- | --- |
-| `HARBOR_DATABASE_URL` | no | `sqlite://harbor-demo.sqlite?mode=rwc` | Use `sqlite:///var/lib/harbor/harbor.sqlite?mode=rwc` on the VPS. |
+| `HARBOR_DATABASE_URL` | no | `sqlite://harbor-headless-demo.sqlite?mode=rwc` | Use `sqlite:///var/lib/harbor/harbor.sqlite?mode=rwc` on the VPS. |
 | `HARBOR_PUBLIC_BASE_URL` | no | `http://localhost:3000` | Use the verified HTTPS origin for live links. |
 | `HARBOR_PRODUCT_NAME` | no | `Harbor` | Product name used by the demo's default Rust email renderer. |
 | `HARBOR_EMAIL_SITE_NAME` | no | host from `HARBOR_PUBLIC_BASE_URL` | Site label used by the demo's default Rust email renderer. |
@@ -24,10 +24,10 @@ code changes or secret leakage.
 | `HARBOR_EMAIL_MODE` | no | `recording` | Accepts `recording`, `log`, or `resend`. |
 | `RESEND_API_KEY` | resend yes | none | Read only by `ResendMailer::from_env`. |
 | `HARBOR_EMAIL_FROM` | resend yes | none | Must be a verified Resend sender. |
-| `HARBOR_DEMO_SMOKE_EMAIL` | no | generated `@example.com` address | Use a real inbox when validating live Resend delivery. The smoke runner adds a unique `+harbor...` tag per run. |
-| `HARBOR_DEMO_SMOKE` | no | `false` | Runs deterministic end-to-end auth flow and exits. |
-| `HARBOR_DEMO_BROWSER_SMOKE` | no | `false` | Starts the local browser smoke server. |
-| `HARBOR_DEMO_ADDR` | no | `127.0.0.1:3000` | Bind address for the browser smoke server. |
+| `HARBOR_HEADLESS_DEMO_SMOKE_EMAIL` | no | generated `@example.com` address | Use a real inbox when validating live Resend delivery. The smoke runner adds a unique `+harbor...` tag per run. |
+| `HARBOR_HEADLESS_DEMO_SMOKE` | no | `false` | Runs deterministic end-to-end auth flow and exits. |
+| `HARBOR_HEADLESS_DEMO_BROWSER_SMOKE` | no | `false` | Starts the local browser smoke server. |
+| `HARBOR_HEADLESS_DEMO_ADDR` | no | `127.0.0.1:3000` | Bind address for the browser smoke server. |
 
 The demo mailer records every message in memory for deterministic smoke flows.
 When `HARBOR_EMAIL_MODE=resend` and the `email-resend` feature is enabled, it
@@ -174,7 +174,7 @@ that feature explicit preserves the minimal default path.
 4. Set `HARBOR_EMAIL_MODE=resend`, `RESEND_API_KEY`, and a verified
    `HARBOR_EMAIL_FROM`.
 5. Use the VPS SQLite path in `HARBOR_DATABASE_URL`.
-6. Run `HARBOR_DEMO_SMOKE=1 cargo run -p harbor-demo --features email-resend`
+6. Run `HARBOR_HEADLESS_DEMO_SMOKE=1 cargo run -p harbor-headless-demo --features email-resend`
    to send live signup, signin, and reset messages.
 7. Dogfood the browser flow after the smoke succeeds; live testing should only
    uncover provider, DNS, proxy, and copy bugs, not unfinished library work.
