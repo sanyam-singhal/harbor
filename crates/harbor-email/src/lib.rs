@@ -18,9 +18,7 @@ use resend_rs::{Resend, types::CreateEmailBaseOptions};
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 const MAX_SECRET_URL_BYTES: usize = 4096;
-#[cfg(feature = "email-resend")]
-const DEFAULT_RESEND_FROM: &str = "Harbor <auth@issuecertificate.com>";
-
+const MAX_RENDERED_EMAIL_FIELD_BYTES: usize = 16 * 1024;
 /// Email delivery boundary used by Harbor web integrations.
 pub trait AuthMailer: Clone + Send + Sync + 'static {
     /// Sends an auth email.
@@ -235,6 +233,159 @@ pub struct ChallengeEmailInput {
     pub otp_code: Option<SecretToken>,
 }
 
+/// Auth email rendering boundary.
+///
+/// Applications can implement this trait in ordinary Rust files and return
+/// fully rendered subject, plain text, and HTML bodies. Harbor then sends the
+/// returned [`AuthEmail`] through the configured mailer.
+pub trait AuthEmailRenderer: fmt::Debug + Send + Sync + 'static {
+    /// Renders a challenge email.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MailError`] when the input is unsupported or the rendered
+    /// email would violate Harbor's email bounds.
+    fn render_challenge_email(&self, input: ChallengeEmailInput) -> Result<AuthEmail, MailError>;
+}
+
+/// Default Rust renderer for Harbor auth emails.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DefaultAuthEmailRenderer {
+    product_name: String,
+    site_name: String,
+}
+
+impl DefaultAuthEmailRenderer {
+    /// Creates Harbor's default Rust auth email renderer.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MailError`] when the product or site name is empty, too
+    /// long, or contains control characters.
+    pub fn new(
+        product_name: impl Into<String>,
+        site_name: impl Into<String>,
+    ) -> Result<Self, MailError> {
+        let product_name = product_name.into();
+        let site_name = site_name.into();
+        validate_rendered_email_field(&product_name, "product_name")?;
+        validate_rendered_email_field(&site_name, "site_name")?;
+        Ok(Self {
+            product_name,
+            site_name,
+        })
+    }
+
+    /// Returns the configured product name.
+    #[must_use]
+    pub fn product_name(&self) -> &str {
+        &self.product_name
+    }
+
+    /// Returns the configured site name.
+    #[must_use]
+    pub fn site_name(&self) -> &str {
+        &self.site_name
+    }
+}
+
+impl AuthEmailRenderer for DefaultAuthEmailRenderer {
+    fn render_challenge_email(&self, input: ChallengeEmailInput) -> Result<AuthEmail, MailError> {
+        validate_template_secrets(
+            input.delivery,
+            input.action_url.as_ref(),
+            input.otp_code.as_ref(),
+        )?;
+        let subject = self.subject(input.purpose);
+        let text_body = self.text_body(
+            input.purpose,
+            input.action_url.as_ref(),
+            input.otp_code.as_ref(),
+        );
+        let html_body = Some(self.html_body(
+            input.purpose,
+            input.action_url.as_ref(),
+            input.otp_code.as_ref(),
+        ));
+        bounded_auth_email(input, subject, text_body, html_body)
+    }
+}
+
+impl DefaultAuthEmailRenderer {
+    fn subject(&self, purpose: ChallengePurpose) -> String {
+        match purpose {
+            ChallengePurpose::SignupConfirmation => {
+                format!("Confirm your {} sign-up", self.product_name)
+            }
+            ChallengePurpose::EmailSignIn => format!("Sign in to {}", self.product_name),
+            ChallengePurpose::PasswordReset => format!("Reset your {} password", self.product_name),
+            _ => format!("{} auth email", self.product_name),
+        }
+    }
+
+    fn text_body(
+        &self,
+        purpose: ChallengePurpose,
+        action_url: Option<&SecretUrl>,
+        otp_code: Option<&SecretToken>,
+    ) -> String {
+        let mut body = self.intro(purpose);
+        if let Some(url) = action_url {
+            body.push_str("\n\nOpen this secure link:\n");
+            body.push_str(url.expose_secret());
+        }
+        if let Some(code) = otp_code {
+            body.push_str("\n\nUse this code:\n");
+            body.push_str(code.expose_secret());
+        }
+        body.push_str("\n\nIf you did not request this, you can ignore this email.");
+        body.push_str(" Do not share this link or code.");
+        body
+    }
+
+    fn html_body(
+        &self,
+        purpose: ChallengePurpose,
+        action_url: Option<&SecretUrl>,
+        otp_code: Option<&SecretToken>,
+    ) -> String {
+        let mut body = String::from("<p>");
+        body.push_str(escape_html(&self.intro(purpose)).as_str());
+        body.push_str("</p>");
+        if let Some(url) = action_url {
+            body.push_str("<p><a href=\"");
+            body.push_str(escape_html(url.expose_secret()).as_str());
+            body.push_str("\">Open secure link</a></p>");
+        }
+        if let Some(code) = otp_code {
+            body.push_str("<p>Code: <strong>");
+            body.push_str(escape_html(code.expose_secret()).as_str());
+            body.push_str("</strong></p>");
+        }
+        body.push_str("<p>If you did not request this, you can ignore this email. ");
+        body.push_str("Do not share this link or code.</p>");
+        body
+    }
+
+    fn intro(&self, purpose: ChallengePurpose) -> String {
+        match purpose {
+            ChallengePurpose::SignupConfirmation => format!(
+                "You requested a {} account for {}. Confirm this email address to finish signing up.",
+                self.product_name, self.site_name
+            ),
+            ChallengePurpose::EmailSignIn => format!(
+                "You requested to sign in to {} for {}.",
+                self.product_name, self.site_name
+            ),
+            ChallengePurpose::PasswordReset => format!(
+                "You requested to reset your {} password for {}.",
+                self.product_name, self.site_name
+            ),
+            _ => format!("Use this {} auth challenge to continue.", self.product_name),
+        }
+    }
+}
+
 /// Successful mail delivery metadata.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MailDelivery {
@@ -249,31 +400,21 @@ pub struct MailDelivery {
 /// Returns [`MailError`] when the requested delivery style is missing its
 /// required secret material.
 pub fn render_challenge_email(input: ChallengeEmailInput) -> Result<AuthEmail, MailError> {
-    validate_template_secrets(
-        input.delivery,
-        input.action_url.as_ref(),
-        input.otp_code.as_ref(),
-    )?;
-    let subject = subject_for_purpose(input.purpose).to_owned();
-    let text_body = render_text_body(
-        input.purpose,
-        input.action_url.as_ref(),
-        input.otp_code.as_ref(),
-    );
-    let html_body = Some(render_html_body(
-        input.purpose,
-        input.action_url.as_ref(),
-        input.otp_code.as_ref(),
-    ));
+    let renderer = DefaultAuthEmailRenderer::new("Harbor", "your application")?;
+    renderer.render_challenge_email(input)
+}
 
-    Ok(AuthEmail::new(
-        input.purpose,
-        input.to,
-        input.challenge_id,
-        subject,
-        text_body,
-        html_body,
-    ))
+/// Renders an auth challenge email using a caller-provided Rust renderer.
+///
+/// # Errors
+///
+/// Returns [`MailError`] when the requested delivery style is missing its
+/// required secret material or the renderer rejects the input.
+pub fn render_challenge_email_with_renderer(
+    input: ChallengeEmailInput,
+    renderer: &(impl AuthEmailRenderer + ?Sized),
+) -> Result<AuthEmail, MailError> {
+    renderer.render_challenge_email(input)
 }
 
 /// In-memory mailer for tests and local demos.
@@ -363,9 +504,7 @@ impl ResendMailer {
 
     /// Creates a Resend mailer from environment variables.
     ///
-    /// Reads `RESEND_API_KEY` and optional `HARBOR_EMAIL_FROM`. When
-    /// `HARBOR_EMAIL_FROM` is absent, Harbor uses
-    /// `Harbor <auth@issuecertificate.com>`.
+    /// Reads `RESEND_API_KEY` and `HARBOR_EMAIL_FROM`.
     ///
     /// # Errors
     ///
@@ -379,7 +518,7 @@ impl ResendMailer {
         let api_key = std::env::var("RESEND_API_KEY")
             .map_err(|_error| MailError::with_detail(MailErrorCode::InvalidConfig, "api_key"))?;
         let from = std::env::var("HARBOR_EMAIL_FROM")
-            .unwrap_or_else(|_error| DEFAULT_RESEND_FROM.to_owned());
+            .map_err(|_error| MailError::with_detail(MailErrorCode::InvalidConfig, "from"))?;
         Self::new(api_key, from)
     }
 
@@ -530,64 +669,41 @@ fn validate_template_secrets(
     }
 }
 
-fn render_text_body(
-    purpose: ChallengePurpose,
-    action_url: Option<&SecretUrl>,
-    otp_code: Option<&SecretToken>,
-) -> String {
-    let mut body = String::from(intro_for_purpose(purpose));
-    if let Some(url) = action_url {
-        body.push_str("\n\nOpen this link:\n");
-        body.push_str(url.expose_secret());
+fn bounded_auth_email(
+    input: ChallengeEmailInput,
+    subject: String,
+    text_body: String,
+    html_body: Option<String>,
+) -> Result<AuthEmail, MailError> {
+    validate_rendered_email_field(&subject, "subject")?;
+    validate_rendered_email_field(&text_body, "text_body")?;
+    if let Some(html_body) = html_body.as_ref() {
+        validate_rendered_email_field(html_body, "html_body")?;
     }
-    if let Some(code) = otp_code {
-        body.push_str("\n\nUse this code:\n");
-        body.push_str(code.expose_secret());
-    }
-    body.push_str("\n\nThis message was sent by Harbor. Do not share this link or code.");
-    body
+    Ok(AuthEmail::new(
+        input.purpose,
+        input.to,
+        input.challenge_id,
+        subject,
+        text_body,
+        html_body,
+    ))
 }
 
-fn render_html_body(
-    purpose: ChallengePurpose,
-    action_url: Option<&SecretUrl>,
-    otp_code: Option<&SecretToken>,
-) -> String {
-    let mut body = String::from("<p>");
-    body.push_str(escape_html(intro_for_purpose(purpose)).as_str());
-    body.push_str("</p>");
-    if let Some(url) = action_url {
-        body.push_str("<p><a href=\"");
-        body.push_str(escape_html(url.expose_secret()).as_str());
-        body.push_str("\">Open Harbor</a></p>");
+fn validate_rendered_email_field(value: &str, detail: &'static str) -> Result<(), MailError> {
+    if value.is_empty() {
+        return Err(MailError::with_detail(MailErrorCode::InvalidConfig, detail));
     }
-    if let Some(code) = otp_code {
-        body.push_str("<p>Code: <strong>");
-        body.push_str(escape_html(code.expose_secret()).as_str());
-        body.push_str("</strong></p>");
+    if value.len() > MAX_RENDERED_EMAIL_FIELD_BYTES {
+        return Err(MailError::with_detail(MailErrorCode::InvalidConfig, detail));
     }
-    body.push_str("<p>Do not share this link or code.</p>");
-    body
-}
-
-fn subject_for_purpose(purpose: ChallengePurpose) -> &'static str {
-    match purpose {
-        ChallengePurpose::SignupConfirmation => "Confirm your Harbor email",
-        ChallengePurpose::EmailSignIn => "Sign in to Harbor",
-        ChallengePurpose::PasswordReset => "Reset your Harbor password",
-        _ => "Harbor auth email",
+    if value
+        .chars()
+        .any(|character| character.is_control() && character != '\n')
+    {
+        return Err(MailError::with_detail(MailErrorCode::InvalidConfig, detail));
     }
-}
-
-fn intro_for_purpose(purpose: ChallengePurpose) -> &'static str {
-    match purpose {
-        ChallengePurpose::SignupConfirmation => "Confirm your email address to finish signing up.",
-        ChallengePurpose::EmailSignIn => "Use this email challenge to sign in to Harbor.",
-        ChallengePurpose::PasswordReset => {
-            "Use this password reset challenge to choose a new password."
-        }
-        _ => "Use this Harbor auth challenge to continue.",
-    }
+    Ok(())
 }
 
 fn is_allowed_secret_url(value: &str) -> bool {
@@ -596,7 +712,9 @@ fn is_allowed_secret_url(value: &str) -> bool {
         || value.starts_with("http://127.0.0.1")
 }
 
-fn escape_html(value: &str) -> String {
+/// Escapes text for simple HTML email rendering.
+#[must_use]
+pub fn escape_html(value: &str) -> String {
     let mut escaped = String::with_capacity(value.len());
     for character in value.chars() {
         match character {

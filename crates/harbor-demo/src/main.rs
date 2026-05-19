@@ -9,7 +9,9 @@ use harbor_core::{
 };
 #[cfg(feature = "email-resend")]
 use harbor_email::ResendMailer;
-use harbor_email::{AuthEmail, AuthMailer, MailDelivery, RecordingMailer};
+use harbor_email::{
+    AuthEmail, AuthMailer, DefaultAuthEmailRenderer, MailDelivery, RecordingMailer,
+};
 use harbor_leptos::{CookieDefaults, CsrfRequest, Harbor, build_csrf_cookie, issue_csrf_token};
 use harbor_sqlx::{SqliteAuthStore, SqliteStoreOptions};
 
@@ -40,6 +42,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_public_base_url(settings.public_base_url.clone())?
         .with_cookie_defaults(CookieDefaults::development())?
         .with_hmac_secret_key(settings.hmac_key.clone())?
+        .with_email_renderer(DefaultAuthEmailRenderer::new(
+            settings.product_name.clone(),
+            settings.email_site_name(),
+        )?)
         .finish()?;
 
     println!(
@@ -81,6 +87,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 struct DemoSettings {
     database_url: String,
     public_base_url: String,
+    product_name: String,
+    email_site_name: Option<String>,
     hmac_key: Vec<u8>,
     email_mode: DemoEmailMode,
     smoke_email: Option<String>,
@@ -96,6 +104,9 @@ impl DemoSettings {
                 .unwrap_or_else(|_error| DEFAULT_DATABASE_URL.to_owned()),
             public_base_url: env::var("HARBOR_PUBLIC_BASE_URL")
                 .unwrap_or_else(|_error| DEFAULT_PUBLIC_BASE_URL.to_owned()),
+            product_name: env::var("HARBOR_PRODUCT_NAME")
+                .unwrap_or_else(|_error| "Harbor".to_owned()),
+            email_site_name: env::var("HARBOR_EMAIL_SITE_NAME").ok(),
             hmac_key: env::var("HARBOR_HMAC_KEY")
                 .map(|value| value.into_bytes())
                 .unwrap_or_else(|_error| vec![42; 32]),
@@ -110,6 +121,12 @@ impl DemoSettings {
             demo_addr: env::var("HARBOR_DEMO_ADDR")
                 .unwrap_or_else(|_error| DEFAULT_DEMO_ADDR.to_owned()),
         })
+    }
+
+    fn email_site_name(&self) -> String {
+        self.email_site_name
+            .clone()
+            .unwrap_or_else(|| display_host(&self.public_base_url).to_owned())
     }
 }
 
@@ -209,6 +226,14 @@ fn sqlite_options_for_url(database_url: &str) -> SqliteStoreOptions {
     } else {
         SqliteStoreOptions::default()
     }
+}
+
+fn display_host(public_base_url: &str) -> &str {
+    let without_scheme = public_base_url
+        .strip_prefix("https://")
+        .or_else(|| public_base_url.strip_prefix("http://"))
+        .unwrap_or(public_base_url);
+    without_scheme.split('/').next().unwrap_or(without_scheme)
 }
 
 async fn run_recording_smoke(

@@ -5,12 +5,14 @@
 //! source of truth.
 
 use core::fmt;
+use std::sync::Arc;
 
 use harbor_core::{
     AuthError, AuthErrorCode, ConfigError, ConfigErrorCode, HmacSecretKey, PasswordPolicy,
     RetryBudget, SecretGenerator, SecretHashPurpose, SecretToken, UnixTimestampMicros,
     constant_time_token_hash_eq, hash_secret_token, random_url_token,
 };
+use harbor_email::{AuthEmailRenderer, DefaultAuthEmailRenderer};
 
 /// Version of the `harbor-leptos` crate.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -46,7 +48,7 @@ const DEFAULT_EMAIL_SIGNIN_CHALLENGE_MICROS: i64 = 10 * 60 * 1_000_000;
 const DEFAULT_PASSWORD_RESET_CHALLENGE_MICROS: i64 = 15 * 60 * 1_000_000;
 
 /// Validated Harbor configuration.
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone)]
 pub struct HarborConfig {
     public_base_url: PublicBaseUrl,
     cookie_defaults: CookieDefaults,
@@ -55,6 +57,7 @@ pub struct HarborConfig {
     password_policy: PasswordPolicy,
     challenge_lifetimes: ChallengeLifetimes,
     rate_limits: AuthRateLimits,
+    email_renderer: Arc<dyn AuthEmailRenderer>,
 }
 
 impl HarborConfig {
@@ -99,6 +102,12 @@ impl HarborConfig {
     pub const fn rate_limits(&self) -> &AuthRateLimits {
         &self.rate_limits
     }
+
+    /// Returns the auth email renderer.
+    #[must_use]
+    pub fn email_renderer(&self) -> &dyn AuthEmailRenderer {
+        self.email_renderer.as_ref()
+    }
 }
 
 impl fmt::Debug for HarborConfig {
@@ -112,6 +121,7 @@ impl fmt::Debug for HarborConfig {
             .field("password_policy", &self.password_policy)
             .field("challenge_lifetimes", &self.challenge_lifetimes)
             .field("rate_limits", &self.rate_limits)
+            .field("email_renderer", &self.email_renderer)
             .finish()
     }
 }
@@ -125,6 +135,7 @@ struct HarborConfigBuilder {
     password_policy: PasswordPolicy,
     challenge_lifetimes: ChallengeLifetimes,
     rate_limits: AuthRateLimits,
+    email_renderer: Option<Arc<dyn AuthEmailRenderer>>,
 }
 
 impl Default for HarborConfigBuilder {
@@ -137,6 +148,7 @@ impl Default for HarborConfigBuilder {
             password_policy: PasswordPolicy::default(),
             challenge_lifetimes: ChallengeLifetimes::default(),
             rate_limits: AuthRateLimits::default(),
+            email_renderer: None,
         }
     }
 }
@@ -146,10 +158,19 @@ impl HarborConfigBuilder {
         self.cookie_defaults.validate()?;
         self.challenge_lifetimes.validate()?;
         self.rate_limits.validate()?;
+        let public_base_url = self
+            .public_base_url
+            .ok_or_else(|| ConfigError::with_detail(ConfigErrorCode::Missing, "public_base_url"))?;
+        let email_renderer = match self.email_renderer {
+            Some(renderer) => renderer,
+            None => Arc::new(
+                DefaultAuthEmailRenderer::new("Harbor", public_base_url.display_host()).map_err(
+                    |_error| ConfigError::with_detail(ConfigErrorCode::Invalid, "email_renderer"),
+                )?,
+            ),
+        };
         Ok(HarborConfig {
-            public_base_url: self.public_base_url.ok_or_else(|| {
-                ConfigError::with_detail(ConfigErrorCode::Missing, "public_base_url")
-            })?,
+            public_base_url,
             cookie_defaults: self.cookie_defaults,
             csrf_header_name: self.csrf_header_name,
             hmac_secret_key: self
@@ -158,6 +179,7 @@ impl HarborConfigBuilder {
             password_policy: self.password_policy,
             challenge_lifetimes: self.challenge_lifetimes,
             rate_limits: self.rate_limits,
+            email_renderer,
         })
     }
 }
@@ -216,6 +238,17 @@ impl PublicBaseUrl {
     #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
+    }
+
+    /// Returns the host portion for display in default email templates.
+    #[must_use]
+    pub fn display_host(&self) -> &str {
+        let without_scheme = self
+            .0
+            .strip_prefix("https://")
+            .or_else(|| self.0.strip_prefix("http://"))
+            .unwrap_or(self.0.as_str());
+        without_scheme.split('/').next().unwrap_or(without_scheme)
     }
 }
 

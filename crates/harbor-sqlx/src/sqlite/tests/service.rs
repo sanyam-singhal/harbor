@@ -564,6 +564,81 @@ async fn email_challenge_signin_creates_verified_account_and_session()
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn passwordless_email_accounts_do_not_receive_password_reset()
+-> Result<(), Box<dyn std::error::Error>> {
+    let store = migrated_store().await?;
+    let hmac_key = HmacSecretKey::try_new(vec![9; 32])?;
+    let service = AuthService::new(
+        store.clone(),
+        FixedClock::new(now()),
+        DeterministicSecretGenerator::new(),
+        hmac_key.clone(),
+        Argon2PasswordHasher::new(
+            PasswordPolicy::try_new(8, 128)?,
+            Argon2Params::try_new(32, 1, 1)?,
+        ),
+    );
+    let signin_challenge = service
+        .create_email_challenge(harbor_core::EmailChallengeInput {
+            purpose: ChallengePurpose::EmailSignIn,
+            delivery: ChallengeDelivery::MagicLink,
+            email: "passwordless@example.com".to_owned(),
+            user_id: None,
+            redirect_path: None,
+        })
+        .await?;
+    let signin = service
+        .sign_in_with_email_challenge(harbor_core::EmailChallengeSignInInput {
+            challenge_id: signin_challenge.challenge.id,
+            secret: signin_challenge.secret,
+            redirect_path: None,
+        })
+        .await?;
+
+    let reset = service
+        .request_password_reset(harbor_core::RequestPasswordResetInput {
+            email: "passwordless@example.com".to_owned(),
+            delivery: ChallengeDelivery::MagicLink,
+            redirect_path: None,
+        })
+        .await?;
+    assert_eq!(reset.challenge, None);
+
+    let reset_secret = SecretToken::try_new("reset-secret")?;
+    let reset_id = ChallengeId::try_new("challenge00000200")?;
+    store
+        .create_challenge(CreateChallengeInput {
+            id: reset_id.clone(),
+            purpose: ChallengePurpose::PasswordReset,
+            user_id: Some(signin.email.user_id),
+            email_canonical: EmailAddress::parse("passwordless@example.com")?
+                .canonical()
+                .clone(),
+            secret_hash: hash_secret_token(&hmac_key, SecretHashPurpose::UrlToken, &reset_secret)?,
+            delivery: ChallengeDelivery::MagicLink,
+            redirect_path: None,
+            expires_at: UnixTimestampMicros::try_new(60_000_000)?,
+            max_attempts: RetryBudget::try_new(5)?,
+            resend_after: now(),
+            now: now(),
+        })
+        .await?;
+    let reset = service
+        .reset_password(harbor_core::ResetPasswordInput {
+            challenge_id: reset_id,
+            secret: reset_secret,
+            new_password: "new correct horse battery staple".to_owned(),
+        })
+        .await;
+    let reset = match reset {
+        Ok(_) => return Err("passwordless reset should not set a first password".into()),
+        Err(error) => error,
+    };
+    assert_eq!(reset.code(), AuthErrorCode::InvalidCredentials);
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn email_challenge_signin_verifies_existing_unverified_account()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = migrated_store().await?;

@@ -1,6 +1,9 @@
 //! Harbor shell, builder, and Leptos context helpers.
 
+use std::sync::Arc;
+
 use harbor_core::{ConfigError, ConfigErrorCode, HmacSecretKey, PasswordPolicy};
+use harbor_email::AuthEmailRenderer;
 
 use crate::{
     AuthRateLimits, ChallengeLifetimes, CookieDefaults, HarborConfig, HarborConfigBuilder,
@@ -204,6 +207,12 @@ impl<S, M> HarborBuilder<S, M> {
         value.validate()?;
         self.config.rate_limits = value;
         Ok(self)
+    }
+
+    /// Sets the Rust renderer used for auth emails.
+    pub fn with_email_renderer(mut self, renderer: impl AuthEmailRenderer) -> Self {
+        self.config.email_renderer = Some(Arc::new(renderer));
+        self
     }
 
     /// Finishes the builder.

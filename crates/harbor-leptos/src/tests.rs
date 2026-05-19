@@ -1,5 +1,7 @@
 use harbor_core::{AuthErrorCode, PasswordPolicy, RetryBudget, SecretToken};
-use harbor_email::RecordingMailer;
+use harbor_email::{
+    ChallengeEmailInput, DefaultAuthEmailRenderer, EmailRecipient, RecordingMailer, SecretUrl,
+};
 use harbor_test_support::DeterministicSecretGenerator;
 use leptos::prelude::Owner;
 
@@ -18,13 +20,13 @@ fn builder_validates_required_configuration() -> Result<(), Box<dyn std::error::
     let harbor = Harbor::builder()
         .with_store("store")
         .with_mailer(RecordingMailer::new())
-        .with_public_base_url("https://issuecertificate.com/")?
+        .with_public_base_url("https://app.example.com/")?
         .with_hmac_secret_key(vec![7; 32])?
         .finish()?;
 
     assert_eq!(
         harbor.config().public_base_url().as_str(),
-        "https://issuecertificate.com"
+        "https://app.example.com"
     );
     assert_eq!(
         harbor
@@ -40,12 +42,12 @@ fn builder_validates_required_configuration() -> Result<(), Box<dyn std::error::
 
 #[test]
 fn public_base_url_requires_https_except_local_development() {
-    assert!(PublicBaseUrl::try_new("https://issuecertificate.com").is_ok());
+    assert!(PublicBaseUrl::try_new("https://app.example.com").is_ok());
     assert!(PublicBaseUrl::try_new("http://localhost:3000").is_ok());
     assert!(PublicBaseUrl::try_new("http://127.0.0.1:3000").is_ok());
     assert_eq!(
-        PublicBaseUrl::try_new("https://issuecertificate.com/").map(|value| value.to_string()),
-        Ok("https://issuecertificate.com".to_owned())
+        PublicBaseUrl::try_new("https://app.example.com/").map(|value| value.to_string()),
+        Ok("https://app.example.com".to_owned())
     );
     assert!(PublicBaseUrl::try_new("").is_err());
     assert!(PublicBaseUrl::try_new(format!("https://{}", "a".repeat(2050))).is_err());
@@ -117,6 +119,7 @@ fn custom_configuration_accessors_round_trip() -> Result<(), Box<dyn std::error:
         .with_password_policy(policy)
         .with_challenge_lifetimes(lifetimes)?
         .with_rate_limits(rate_limits)?
+        .with_email_renderer(DefaultAuthEmailRenderer::new("TestAuth", "test.local")?)
         .finish()?;
 
     assert_eq!(harbor.store(), &"store");
@@ -134,6 +137,20 @@ fn custom_configuration_accessors_round_trip() -> Result<(), Box<dyn std::error:
     assert!(!harbor.config().cookie_defaults().secure());
     assert!(harbor.config().cookie_defaults().session_http_only());
     assert!(!harbor.config().cookie_defaults().csrf_http_only());
+    let rendered = harbor.config().email_renderer().render_challenge_email(
+        ChallengeEmailInput {
+            purpose: harbor_core::ChallengePurpose::SignupConfirmation,
+            delivery: harbor_core::ChallengeDelivery::MagicLink,
+            to: EmailRecipient::parse("user@example.com")?,
+            challenge_id: harbor_core::ChallengeId::try_new("challenge00000001")?,
+            action_url: Some(SecretUrl::try_new(
+                "http://localhost:3000/auth/confirm-email?challenge=challenge00000001&token=abc",
+            )?),
+            otp_code: None,
+        },
+    )?;
+    assert!(rendered.subject().contains("TestAuth"));
+    assert!(rendered.text_body().contains("test.local"));
     Ok(())
 }
 

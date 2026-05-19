@@ -2,8 +2,8 @@
 
 This document is the handoff map for the email-auth draft before live
 dogfooding. It keeps configuration explicit so the demo can move from local
-SQLite and recording email to `issuecertificate.com` plus Resend without code
-changes or secret leakage.
+SQLite and recording email to any verified HTTPS domain plus Resend without
+code changes or secret leakage.
 
 ## Feature Flags
 
@@ -17,11 +17,13 @@ changes or secret leakage.
 | Variable | Required | Default | Notes |
 | --- | --- | --- | --- |
 | `HARBOR_DATABASE_URL` | no | `sqlite://harbor-demo.sqlite?mode=rwc` | Use `sqlite:///var/lib/harbor/harbor.sqlite?mode=rwc` on the VPS. |
-| `HARBOR_PUBLIC_BASE_URL` | no | `http://localhost:3000` | Use `https://issuecertificate.com` for live links. |
+| `HARBOR_PUBLIC_BASE_URL` | no | `http://localhost:3000` | Use the verified HTTPS origin for live links. |
+| `HARBOR_PRODUCT_NAME` | no | `Harbor` | Product name used by the demo's default Rust email renderer. |
+| `HARBOR_EMAIL_SITE_NAME` | no | host from `HARBOR_PUBLIC_BASE_URL` | Site label used by the demo's default Rust email renderer. |
 | `HARBOR_HMAC_KEY` | live yes | local fixed demo key | Must be at least 32 bytes and stable across restarts. |
 | `HARBOR_EMAIL_MODE` | no | `recording` | Accepts `recording`, `log`, or `resend`. |
 | `RESEND_API_KEY` | resend yes | none | Read only by `ResendMailer::from_env`. |
-| `HARBOR_EMAIL_FROM` | resend no | `Harbor <auth@issuecertificate.com>` | Must be a verified Resend sender. |
+| `HARBOR_EMAIL_FROM` | resend yes | none | Must be a verified Resend sender. |
 | `HARBOR_DEMO_SMOKE_EMAIL` | no | generated `@example.com` address | Use a real inbox when validating live Resend delivery. The smoke runner adds a unique `+harbor...` tag per run. |
 | `HARBOR_DEMO_SMOKE` | no | `false` | Runs deterministic end-to-end auth flow and exits. |
 | `HARBOR_DEMO_BROWSER_SMOKE` | no | `false` | Starts the local browser smoke server. |
@@ -31,6 +33,69 @@ The demo mailer records every message in memory for deterministic smoke flows.
 When `HARBOR_EMAIL_MODE=resend` and the `email-resend` feature is enabled, it
 also sends through Resend. Tests continue to use local recording or local HTTP
 test servers only.
+
+## Auth Email Rendering
+
+Harbor renders auth email content in Rust before handing it to Resend as
+explicit `subject`, `text`, and `html` fields. Resend also supports hosted
+templates, but its send-email API does not allow mixing a provider template
+with explicit `html`, `text`, or React content in the same request. Harbor v0.1
+therefore keeps the portable path as app-owned Rust rendering.
+
+For a Leptos app, put templates in a normal Rust module, for example
+`src/auth_email.rs`:
+
+```rust
+use harbor_core::{ChallengePurpose, MailError};
+use harbor_email::{
+    AuthEmail, AuthEmailRenderer, ChallengeEmailInput, escape_html,
+};
+
+#[derive(Debug, Clone)]
+pub struct AppAuthEmail;
+
+impl AuthEmailRenderer for AppAuthEmail {
+    fn render_challenge_email(&self, input: ChallengeEmailInput) -> Result<AuthEmail, MailError> {
+        let product = "Your App";
+        let subject = match input.purpose {
+            ChallengePurpose::SignupConfirmation => format!("Confirm your {product} sign-up"),
+            ChallengePurpose::EmailSignIn => format!("Sign in to {product}"),
+            ChallengePurpose::PasswordReset => format!("Reset your {product} password"),
+            _ => format!("{product} auth email"),
+        };
+        let mut text = subject.clone();
+        if let Some(url) = input.action_url.as_ref() {
+            text.push_str("\n\n");
+            text.push_str(url.expose_secret());
+        }
+        if let Some(code) = input.otp_code.as_ref() {
+            text.push_str("\n\nCode: ");
+            text.push_str(code.expose_secret());
+        }
+        let html = format!("<p>{}</p>", escape_html(&text).replace('\n', "<br>"));
+        Ok(AuthEmail::new(
+            input.purpose,
+            input.to,
+            input.challenge_id,
+            subject,
+            text,
+            Some(html),
+        ))
+    }
+}
+```
+
+Then wire it into Harbor:
+
+```rust
+let harbor = Harbor::builder()
+    .with_store(store)
+    .with_mailer(mailer)
+    .with_public_base_url(public_base_url)?
+    .with_hmac_secret_key(hmac_key)?
+    .with_email_renderer(AppAuthEmail)
+    .finish()?;
+```
 
 ## Leptos Integration Shape
 
@@ -104,7 +169,7 @@ that feature explicit preserves the minimal default path.
 ## Live Testing Checklist
 
 1. Build the demo with `--features email-resend`.
-2. Set `HARBOR_PUBLIC_BASE_URL=https://issuecertificate.com`.
+2. Set `HARBOR_PUBLIC_BASE_URL` to the verified HTTPS origin.
 3. Set a stable high-entropy `HARBOR_HMAC_KEY`.
 4. Set `HARBOR_EMAIL_MODE=resend`, `RESEND_API_KEY`, and a verified
    `HARBOR_EMAIL_FROM`.

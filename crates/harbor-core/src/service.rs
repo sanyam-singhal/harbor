@@ -479,6 +479,17 @@ where
         if email_record.verified_at.is_none() {
             return Ok(RequestPasswordResetOutput { challenge: None });
         }
+        if self
+            .store
+            .get_password_credential(GetPasswordCredentialInput {
+                user_id: email_record.user_id.clone(),
+            })
+            .await
+            .map_err(AuthError::from)?
+            .is_none()
+        {
+            return Ok(RequestPasswordResetOutput { challenge: None });
+        }
 
         let challenge = self
             .create_email_challenge(EmailChallengeInput {
@@ -539,7 +550,7 @@ where
             Some(credential) => credential.password_version.checked_add(1).ok_or_else(|| {
                 AuthError::with_detail(AuthErrorCode::Internal, "password_version")
             })?,
-            None => 1,
+            None => return Err(AuthError::new(AuthErrorCode::InvalidCredentials)),
         };
         let now = self.clock.now();
         let credential = self

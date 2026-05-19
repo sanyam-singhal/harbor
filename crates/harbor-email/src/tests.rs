@@ -1,9 +1,25 @@
 use harbor_core::{ChallengeDelivery, ChallengeId, ChallengePurpose, SecretToken};
 
 use super::{
-    AuthMailer, ChallengeEmailInput, EmailRecipient, RecordingMailer, SecretUrl,
-    render_challenge_email,
+    AuthEmail, AuthEmailRenderer, AuthMailer, ChallengeEmailInput, EmailRecipient, MailError,
+    RecordingMailer, SecretUrl, render_challenge_email, render_challenge_email_with_renderer,
 };
+
+#[derive(Debug)]
+struct AppRenderer;
+
+impl AuthEmailRenderer for AppRenderer {
+    fn render_challenge_email(&self, input: ChallengeEmailInput) -> Result<AuthEmail, MailError> {
+        Ok(AuthEmail::new(
+            input.purpose,
+            input.to,
+            input.challenge_id,
+            "App auth subject".to_owned(),
+            "App auth text".to_owned(),
+            Some("<p>App auth HTML</p>".to_owned()),
+        ))
+    }
+}
 
 #[cfg(feature = "email-resend")]
 fn spawn_resend_server(
@@ -57,7 +73,7 @@ async fn recording_mailer_captures_rendered_email() -> Result<(), Box<dyn std::e
         to: EmailRecipient::parse("User@Example.com")?,
         challenge_id: ChallengeId::try_new("challenge00000001")?,
         action_url: Some(SecretUrl::try_new(
-            "https://issuecertificate.com/auth/confirm-email?challenge=challenge00000001&token=abc",
+            "https://app.example.com/auth/confirm-email?challenge=challenge00000001&token=abc",
         )?),
         otp_code: None,
     })?;
@@ -73,11 +89,16 @@ async fn recording_mailer_captures_rendered_email() -> Result<(), Box<dyn std::e
     assert_eq!(sent.to().original(), "User@Example.com");
     assert_eq!(sent.kind(), ChallengePurpose::SignupConfirmation);
     assert_eq!(sent.challenge_id().as_str(), "challenge00000001");
-    assert_eq!(sent.subject(), "Confirm your Harbor email");
+    assert_eq!(sent.subject(), "Confirm your Harbor sign-up");
     assert!(
         sent.text_body()
-            .contains("https://issuecertificate.com/auth/confirm-email")
+            .contains("https://app.example.com/auth/confirm-email")
     );
+    assert!(
+        sent.text_body()
+            .contains("You requested a Harbor account for your application")
+    );
+    assert!(sent.text_body().contains("If you did not request this"));
     assert!(!format!("{sent:?}").contains("abc"));
     mailer.clear()?;
     assert!(mailer.recorded()?.is_empty());
@@ -115,6 +136,7 @@ fn otp_template_renders_code_and_escapes_html() -> Result<(), Box<dyn std::error
     };
 
     assert!(email.text_body().contains("12345678"));
+    assert!(email.subject().contains("Harbor"));
     assert!(html.contains("<strong>12345678</strong>"));
     assert!(!format!("{email:?}").contains("12345678"));
     Ok(())
@@ -124,7 +146,7 @@ fn otp_template_renders_code_and_escapes_html() -> Result<(), Box<dyn std::error
 fn combined_template_renders_link_code_and_html_escapes() -> Result<(), Box<dyn std::error::Error>>
 {
     let secret_url =
-        SecretUrl::try_new("https://issuecertificate.com/auth/email-link?x=<tag>&quote=\"'")?;
+        SecretUrl::try_new("https://app.example.com/auth/email-link?x=<tag>&quote=\"'")?;
     let email = render_challenge_email(ChallengeEmailInput {
         purpose: ChallengePurpose::PasswordReset,
         delivery: ChallengeDelivery::Both,
@@ -148,13 +170,35 @@ fn combined_template_renders_link_code_and_html_escapes() -> Result<(), Box<dyn 
 }
 
 #[test]
+fn rust_renderer_can_own_application_email_templates() -> Result<(), Box<dyn std::error::Error>> {
+    let email = render_challenge_email_with_renderer(
+        ChallengeEmailInput {
+            purpose: ChallengePurpose::EmailSignIn,
+            delivery: ChallengeDelivery::MagicLink,
+            to: EmailRecipient::parse("user@example.com")?,
+            challenge_id: ChallengeId::try_new("challenge00000003")?,
+            action_url: Some(SecretUrl::try_new(
+                "https://app.example.com/auth/email-link?challenge=challenge00000003&token=abc",
+            )?),
+            otp_code: None,
+        },
+        &AppRenderer,
+    )?;
+
+    assert_eq!(email.subject(), "App auth subject");
+    assert_eq!(email.text_body(), "App auth text");
+    assert_eq!(email.html_body(), Some("<p>App auth HTML</p>"));
+    Ok(())
+}
+
+#[test]
 fn secret_urls_require_https_except_local_development() {
-    assert!(SecretUrl::try_new("https://issuecertificate.com/auth/email-link").is_ok());
+    assert!(SecretUrl::try_new("https://app.example.com/auth/email-link").is_ok());
     assert!(SecretUrl::try_new("http://localhost:3000/auth/email-link").is_ok());
     assert!(SecretUrl::try_new("http://127.0.0.1:3000/auth/email-link").is_ok());
     assert!(SecretUrl::try_new("").is_err());
     assert!(SecretUrl::try_new(format!("https://{}", "a".repeat(4097))).is_err());
-    assert!(SecretUrl::try_new("https://issuecertificate.com/\n").is_err());
+    assert!(SecretUrl::try_new("https://app.example.com/\n").is_err());
     assert!(SecretUrl::try_new("http://example.com/auth/email-link").is_err());
 }
 
@@ -202,7 +246,7 @@ async fn resend_mailer_sends_to_configured_base_url() -> Result<(), Box<dyn std:
         to: EmailRecipient::parse("User@Example.com")?,
         challenge_id: ChallengeId::try_new("challenge00000003")?,
         action_url: Some(SecretUrl::try_new(
-            "https://issuecertificate.com/auth/email-link?challenge=challenge00000003&token=abc",
+            "https://app.example.com/auth/email-link?challenge=challenge00000003&token=abc",
         )?),
         otp_code: Some(SecretToken::try_new("12345678")?),
     })?;
@@ -237,7 +281,7 @@ async fn resend_mailer_maps_rate_limits() -> Result<(), Box<dyn std::error::Erro
         to: EmailRecipient::parse("user@example.com")?,
         challenge_id: ChallengeId::try_new("challenge00000004")?,
         action_url: Some(SecretUrl::try_new(
-            "https://issuecertificate.com/auth/email-link?challenge=challenge00000004&token=abc",
+            "https://app.example.com/auth/email-link?challenge=challenge00000004&token=abc",
         )?),
         otp_code: None,
     })?;

@@ -6,7 +6,8 @@ use harbor_core::{
     RedirectPath, RetryBudget, SecretGenerator, SecretToken,
 };
 use harbor_email::{
-    AuthMailer, ChallengeEmailInput, EmailRecipient, SecretUrl, render_challenge_email,
+    AuthMailer, ChallengeEmailInput, EmailRecipient, SecretUrl,
+    render_challenge_email_with_renderer,
 };
 
 use crate::{
@@ -462,14 +463,17 @@ async fn send_challenge_email<M: AuthMailer>(
         }
     };
     let recipient = EmailRecipient::parse(challenge.challenge.email_canonical.as_str())?;
-    let email = render_challenge_email(ChallengeEmailInput {
-        purpose: challenge.challenge.purpose,
-        delivery: challenge.challenge.delivery,
-        to: recipient,
-        challenge_id: challenge.challenge.id,
-        action_url,
-        otp_code,
-    })?;
+    let email = render_challenge_email_with_renderer(
+        ChallengeEmailInput {
+            purpose: challenge.challenge.purpose,
+            delivery: challenge.challenge.delivery,
+            to: recipient,
+            challenge_id: challenge.challenge.id,
+            action_url,
+            otp_code,
+        },
+        config.email_renderer(),
+    )?;
     mailer
         .send_auth_email(email)
         .await
