@@ -16,10 +16,11 @@ use crate::{
 const DEFAULT_IDLE_SESSION_MICROS: i64 = 12 * 60 * 60 * 1_000_000;
 const DEFAULT_ABSOLUTE_SESSION_MICROS: i64 = 30 * 24 * 60 * 60 * 1_000_000;
 const SESSION_LAST_SEEN_UPDATE_MICROS: i64 = 60 * 1_000_000;
-const SIGNUP_CONFIRMATION_MICROS: i64 = 30 * 60 * 1_000_000;
-const EMAIL_SIGNIN_MICROS: i64 = 10 * 60 * 1_000_000;
-const PASSWORD_RESET_MICROS: i64 = 15 * 60 * 1_000_000;
-const RESEND_COOLDOWN_MICROS: i64 = 60 * 1_000_000;
+const DEFAULT_SIGNUP_CONFIRMATION_MICROS: i64 = 30 * 60 * 1_000_000;
+const DEFAULT_EMAIL_SIGNIN_MICROS: i64 = 10 * 60 * 1_000_000;
+const DEFAULT_PASSWORD_RESET_MICROS: i64 = 15 * 60 * 1_000_000;
+const DEFAULT_RESEND_COOLDOWN_MICROS: i64 = 60 * 1_000_000;
+const DEFAULT_CHALLENGE_MAX_ATTEMPTS: usize = 5;
 const MAX_RATE_LIMIT_KEY_BYTES: usize = 1024;
 
 /// Core auth service.
@@ -307,6 +308,22 @@ where
         &self,
         input: EmailChallengeInput,
     ) -> Result<EmailChallengeOutput, AuthError> {
+        let policy = ChallengePolicy::for_purpose(input.purpose)?;
+        self.create_email_challenge_with_policy(input, policy).await
+    }
+
+    /// Creates an email challenge using explicit expiry and attempt policy.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AuthError`] when input validation, policy validation,
+    /// randomness, hashing, or storage fails.
+    pub async fn create_email_challenge_with_policy(
+        &self,
+        input: EmailChallengeInput,
+        policy: ChallengePolicy,
+    ) -> Result<EmailChallengeOutput, AuthError> {
+        policy.validate()?;
         let email = EmailAddress::parse(input.email)
             .map_err(|_error| AuthError::new(AuthErrorCode::InvalidCredentials))?;
         let secret = match input.delivery {
@@ -322,10 +339,10 @@ where
         .map_err(|_error| AuthError::with_detail(AuthErrorCode::Internal, "challenge_hash"))?;
         let now = self.clock.now();
         let expires_at = now
-            .checked_add_micros(challenge_lifetime(input.purpose))
+            .checked_add_micros(policy.lifetime.as_i64())
             .ok_or_else(|| AuthError::with_detail(AuthErrorCode::Internal, "challenge_expiry"))?;
         let resend_after = now
-            .checked_add_micros(RESEND_COOLDOWN_MICROS)
+            .checked_add_micros(policy.resend_cooldown.as_i64())
             .ok_or_else(|| AuthError::with_detail(AuthErrorCode::Internal, "resend_after"))?;
         let challenge = self
             .store
@@ -340,9 +357,7 @@ where
                 delivery: input.delivery,
                 redirect_path: input.redirect_path,
                 expires_at,
-                max_attempts: RetryBudget::try_new(5).map_err(|_error| {
-                    AuthError::with_detail(AuthErrorCode::Internal, "attempts")
-                })?,
+                max_attempts: policy.max_attempts,
                 resend_after,
                 now,
             })
@@ -435,6 +450,22 @@ where
         &self,
         input: EmailChallengeSignInInput,
     ) -> Result<EmailChallengeSignInOutput, AuthError> {
+        self.sign_in_with_email_challenge_with_policy(input, EmailChallengeSignInPolicy::default())
+            .await
+    }
+
+    /// Signs in by consuming an email challenge with explicit account policy.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AuthError`] when the challenge is invalid, the email does not
+    /// belong to a user and passwordless signup is disabled, or persistence
+    /// fails.
+    pub async fn sign_in_with_email_challenge_with_policy(
+        &self,
+        input: EmailChallengeSignInInput,
+        policy: EmailChallengeSignInPolicy,
+    ) -> Result<EmailChallengeSignInOutput, AuthError> {
         let verified = self
             .verify_email_challenge(VerifyChallengeInput {
                 challenge_id: input.challenge_id,
@@ -443,7 +474,10 @@ where
             })
             .await?;
         let email_record = self
-            .ensure_verified_email_account(verified.challenge.email_canonical)
+            .ensure_verified_email_account(
+                verified.challenge.email_canonical,
+                policy.passwordless_signup,
+            )
             .await?;
         let signin = self
             .create_session_for_user(email_record.user_id.clone(), input.redirect_path)
@@ -469,6 +503,24 @@ where
     pub async fn request_password_reset(
         &self,
         input: RequestPasswordResetInput,
+    ) -> Result<RequestPasswordResetOutput, AuthError> {
+        let policy = ChallengePolicy::for_purpose(ChallengePurpose::PasswordReset)?;
+        self.request_password_reset_with_policy(input, policy).await
+    }
+
+    /// Requests a password reset challenge using explicit challenge policy.
+    ///
+    /// Missing and unverified email addresses produce an empty output so HTTP
+    /// handlers can keep a consistent user-facing response.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AuthError`] when input validation, policy validation,
+    /// randomness, hashing, or storage fails.
+    pub async fn request_password_reset_with_policy(
+        &self,
+        input: RequestPasswordResetInput,
+        policy: ChallengePolicy,
     ) -> Result<RequestPasswordResetOutput, AuthError> {
         let email = EmailAddress::parse(input.email)
             .map_err(|_error| AuthError::new(AuthErrorCode::InvalidCredentials))?;
@@ -498,13 +550,16 @@ where
         }
 
         let challenge = self
-            .create_email_challenge(EmailChallengeInput {
-                purpose: ChallengePurpose::PasswordReset,
-                delivery: input.delivery,
-                email: email_record.email_original,
-                user_id: Some(email_record.user_id),
-                redirect_path: input.redirect_path,
-            })
+            .create_email_challenge_with_policy(
+                EmailChallengeInput {
+                    purpose: ChallengePurpose::PasswordReset,
+                    delivery: input.delivery,
+                    email: email_record.email_original,
+                    user_id: Some(email_record.user_id),
+                    redirect_path: input.redirect_path,
+                },
+                policy,
+            )
             .await?;
 
         Ok(RequestPasswordResetOutput {
@@ -588,6 +643,7 @@ where
     async fn ensure_verified_email_account(
         &self,
         email_canonical: crate::CanonicalEmail,
+        passwordless_signup: PasswordlessSignup,
     ) -> Result<UserEmailRecord, AuthError> {
         let now = self.clock.now();
         if let Some(email_record) = self
@@ -610,6 +666,9 @@ where
                 .await
                 .map_err(AuthError::from)?
                 .ok_or_else(|| AuthError::new(AuthErrorCode::InvalidCredentials));
+        }
+        if passwordless_signup == PasswordlessSignup::Disabled {
+            return Err(AuthError::new(AuthErrorCode::InvalidCredentials));
         }
 
         let user_id = new_user_id(&self.generator)
@@ -749,11 +808,11 @@ where
     }
 }
 
-fn challenge_lifetime(purpose: ChallengePurpose) -> i64 {
+fn default_challenge_lifetime(purpose: ChallengePurpose) -> i64 {
     match purpose {
-        ChallengePurpose::SignupConfirmation => SIGNUP_CONFIRMATION_MICROS,
-        ChallengePurpose::EmailSignIn => EMAIL_SIGNIN_MICROS,
-        ChallengePurpose::PasswordReset => PASSWORD_RESET_MICROS,
+        ChallengePurpose::SignupConfirmation => DEFAULT_SIGNUP_CONFIRMATION_MICROS,
+        ChallengePurpose::EmailSignIn => DEFAULT_EMAIL_SIGNIN_MICROS,
+        ChallengePurpose::PasswordReset => DEFAULT_PASSWORD_RESET_MICROS,
     }
 }
 
@@ -780,6 +839,15 @@ fn rate_limit_key_material(scope: AuthRateLimitScope, key: &str) -> String {
     material.push(':');
     material.push_str(key);
     material
+}
+
+fn positive_micros(value: i64, detail: &'static str) -> Result<UnixTimestampMicros, AuthError> {
+    let value = UnixTimestampMicros::try_new(value)
+        .map_err(|_error| AuthError::with_detail(AuthErrorCode::Internal, detail))?;
+    if value.as_i64() <= 0 {
+        return Err(AuthError::with_detail(AuthErrorCode::Internal, detail));
+    }
+    Ok(value)
 }
 
 /// Auth workflow rate-limit scope.
@@ -820,6 +888,121 @@ pub struct RateLimitInput {
     pub max_count: RetryBudget,
     /// Window duration in microseconds.
     pub window: UnixTimestampMicros,
+}
+
+/// Expiry, retry, and resend policy for an email challenge.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ChallengePolicy {
+    lifetime: UnixTimestampMicros,
+    max_attempts: RetryBudget,
+    resend_cooldown: UnixTimestampMicros,
+}
+
+impl ChallengePolicy {
+    /// Creates a challenge policy.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AuthError`] when either duration is not positive.
+    pub fn new(
+        lifetime: UnixTimestampMicros,
+        max_attempts: RetryBudget,
+        resend_cooldown: UnixTimestampMicros,
+    ) -> Result<Self, AuthError> {
+        let policy = Self {
+            lifetime,
+            max_attempts,
+            resend_cooldown,
+        };
+        policy.validate()?;
+        Ok(policy)
+    }
+
+    /// Returns Harbor's default policy for a challenge purpose.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AuthError`] if a built-in default is internally invalid.
+    pub fn for_purpose(purpose: ChallengePurpose) -> Result<Self, AuthError> {
+        Self::new(
+            positive_micros(default_challenge_lifetime(purpose), "challenge_lifetime")?,
+            RetryBudget::try_new(DEFAULT_CHALLENGE_MAX_ATTEMPTS)
+                .map_err(|_error| AuthError::with_detail(AuthErrorCode::Internal, "attempts"))?,
+            positive_micros(DEFAULT_RESEND_COOLDOWN_MICROS, "resend_cooldown")?,
+        )
+    }
+
+    /// Returns the challenge lifetime.
+    #[must_use]
+    pub const fn lifetime(&self) -> UnixTimestampMicros {
+        self.lifetime
+    }
+
+    /// Returns the maximum failed attempts.
+    #[must_use]
+    pub const fn max_attempts(&self) -> RetryBudget {
+        self.max_attempts
+    }
+
+    /// Returns the resend cooldown.
+    #[must_use]
+    pub const fn resend_cooldown(&self) -> UnixTimestampMicros {
+        self.resend_cooldown
+    }
+
+    fn validate(&self) -> Result<(), AuthError> {
+        if self.lifetime.as_i64() <= 0 {
+            return Err(AuthError::with_detail(
+                AuthErrorCode::Internal,
+                "challenge_lifetime",
+            ));
+        }
+        if self.resend_cooldown.as_i64() <= 0 {
+            return Err(AuthError::with_detail(
+                AuthErrorCode::Internal,
+                "resend_cooldown",
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// Whether email challenge sign-in may create a new passwordless account.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum PasswordlessSignup {
+    /// Create a verified email account if the challenge email is unknown.
+    Allowed,
+    /// Reject unknown emails without creating an account.
+    Disabled,
+}
+
+/// Policy applied when an email challenge is exchanged for a session.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EmailChallengeSignInPolicy {
+    passwordless_signup: PasswordlessSignup,
+}
+
+impl EmailChallengeSignInPolicy {
+    /// Creates an email challenge sign-in policy.
+    #[must_use]
+    pub const fn new(passwordless_signup: PasswordlessSignup) -> Self {
+        Self {
+            passwordless_signup,
+        }
+    }
+
+    /// Returns whether passwordless signup is allowed.
+    #[must_use]
+    pub const fn passwordless_signup(&self) -> PasswordlessSignup {
+        self.passwordless_signup
+    }
+}
+
+impl Default for EmailChallengeSignInPolicy {
+    fn default() -> Self {
+        Self::new(PasswordlessSignup::Allowed)
+    }
 }
 
 /// Password signup input.
