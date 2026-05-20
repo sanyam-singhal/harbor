@@ -1,23 +1,48 @@
 //! Demo-owned Harbor auth configuration.
 
+#[cfg(feature = "ssr")]
 use axum::extract::FromRef;
+#[cfg(feature = "ssr")]
 use harbor::core::{ChallengePurpose, MailError};
+#[cfg(feature = "ssr")]
 use harbor::email::{
     AuthEmail, AuthEmailRenderer, ChallengeEmailInput, ConfiguredAuthMailer, SecretUrl, escape_html,
 };
+#[cfg(feature = "ssr")]
 use harbor::leptos::Harbor;
+#[cfg(feature = "ssr")]
 use harbor::leptos::sqlx::sqlite::{SqliteHarbor, SqliteHarborService};
+#[cfg(feature = "ssr")]
 use harbor::sqlx::SqliteAuthStore;
+#[cfg(feature = "ssr")]
 use leptos::config::LeptosOptions;
+use leptos::prelude::*;
 
-use crate::app::DemoPublicConfig;
+/// Public labels needed while rendering the app.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DemoPublicConfig {
+    /// Product name shown in the UI and auth email templates.
+    pub product_name: String,
+    /// Site name shown in auth email templates and UI captions.
+    pub site_name: String,
+}
+
+/// CSRF hidden input for Harbor auth forms.
+#[component]
+pub fn CsrfField() -> impl IntoView {
+    let token = issue_form_csrf().unwrap_or_default();
+    view! { <input name="csrf_token" type="hidden" value=token/> }
+}
 
 /// Concrete auth service used by the demo.
+#[cfg(feature = "ssr")]
 pub type DemoAuthService = SqliteHarborService;
 
+#[cfg(feature = "ssr")]
 type DemoAuth = SqliteHarbor<ConfiguredAuthMailer>;
 
-/// Server state shared with Leptos route rendering and server functions.
+/// Server state shared with Leptos route rendering.
+#[cfg(feature = "ssr")]
 #[derive(Clone)]
 pub struct DemoState {
     leptos_options: LeptosOptions,
@@ -25,6 +50,7 @@ pub struct DemoState {
     public_config: DemoPublicConfig,
 }
 
+#[cfg(feature = "ssr")]
 impl DemoState {
     /// Builds demo state from environment and Leptos options.
     ///
@@ -64,8 +90,15 @@ impl DemoState {
     pub const fn public_config(&self) -> &DemoPublicConfig {
         &self.public_config
     }
+
+    /// Builds Harbor's mounted auth router for the demo.
+    #[must_use]
+    pub fn auth_router(&self) -> axum::Router {
+        self.auth.axum_router()
+    }
 }
 
+#[cfg(feature = "ssr")]
 impl FromRef<DemoState> for LeptosOptions {
     fn from_ref(state: &DemoState) -> Self {
         state.leptos_options.clone()
@@ -73,22 +106,26 @@ impl FromRef<DemoState> for LeptosOptions {
 }
 
 /// Provides app state to Leptos context.
+#[cfg(feature = "ssr")]
 pub fn provide_demo_state(state: DemoState) {
     leptos::prelude::provide_context(state.public_config().clone());
     leptos::prelude::provide_context(state);
 }
 
 /// Returns a cloned demo state from Leptos context.
+#[cfg(feature = "ssr")]
 #[must_use]
 pub fn use_demo_state() -> Option<DemoState> {
     leptos::prelude::use_context::<DemoState>()
 }
 
+#[cfg(feature = "ssr")]
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct DemoAuthEmailRenderer {
     public_config: DemoPublicConfig,
 }
 
+#[cfg(feature = "ssr")]
 impl DemoAuthEmailRenderer {
     fn new(public_config: DemoPublicConfig) -> Self {
         Self { public_config }
@@ -172,6 +209,7 @@ impl DemoAuthEmailRenderer {
     }
 }
 
+#[cfg(feature = "ssr")]
 impl AuthEmailRenderer for DemoAuthEmailRenderer {
     fn render_challenge_email(&self, input: ChallengeEmailInput) -> Result<AuthEmail, MailError> {
         let subject = self.subject(input.purpose);
@@ -188,14 +226,46 @@ impl AuthEmailRenderer for DemoAuthEmailRenderer {
     }
 }
 
+#[cfg(feature = "ssr")]
 fn escape_html_url(url: &SecretUrl) -> String {
     escape_html(url.expose_secret())
 }
 
+#[cfg(feature = "ssr")]
+fn issue_form_csrf() -> Option<String> {
+    use axum::http::header::SET_COOKIE;
+    use harbor::core::SystemSecretGenerator;
+    use leptos::prelude::use_context;
+    use leptos_axum::ResponseOptions;
+
+    let state = use_demo_state()?;
+    let csrf =
+        harbor::leptos::issue_csrf_token(state.harbor().config(), &SystemSecretGenerator).ok()?;
+    let cookie =
+        harbor::leptos::build_csrf_cookie(state.harbor().config().cookie_defaults(), &csrf, None)
+            .ok()?;
+    if let Some(response) = use_context::<ResponseOptions>() {
+        response.append_header(SET_COOKIE, header_value(&cookie)?);
+    }
+    Some(csrf.expose_secret().to_owned())
+}
+
+#[cfg(not(feature = "ssr"))]
+fn issue_form_csrf() -> Option<String> {
+    None
+}
+
+#[cfg(feature = "ssr")]
+fn header_value(value: &str) -> Option<axum::http::HeaderValue> {
+    axum::http::HeaderValue::from_str(value).ok()
+}
+
+#[cfg(feature = "ssr")]
 fn required_env(name: &'static str) -> Result<String, Box<dyn std::error::Error>> {
     std::env::var(name).map_err(|_error| config_error(format!("{name} is required")))
 }
 
+#[cfg(feature = "ssr")]
 fn public_config_from_env() -> Result<DemoPublicConfig, Box<dyn std::error::Error>> {
     Ok(DemoPublicConfig {
         product_name: required_env("HARBOR_PRODUCT_NAME")?,
@@ -203,6 +273,7 @@ fn public_config_from_env() -> Result<DemoPublicConfig, Box<dyn std::error::Erro
     })
 }
 
+#[cfg(feature = "ssr")]
 fn config_error(message: impl Into<String>) -> Box<dyn std::error::Error> {
     Box::new(std::io::Error::other(message.into()))
 }

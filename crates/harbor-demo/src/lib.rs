@@ -1,9 +1,9 @@
 //! Leptos demo application for Harbor email authentication.
 
-/// Leptos application components and server functions.
+/// Leptos application components.
 pub mod app;
 
-#[cfg(feature = "ssr")]
+/// Demo-owned Harbor auth configuration.
 pub mod auth;
 
 #[cfg(feature = "hydrate")]
