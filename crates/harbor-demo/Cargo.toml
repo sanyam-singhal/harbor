@@ -1,0 +1,64 @@
+[package]
+name = "harbor-demo"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Leptos showcase application for Harbor email authentication."
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[[bin]]
+name = "harbor-demo"
+path = "src/main.rs"
+required-features = ["ssr"]
+
+[dependencies]
+axum = { workspace = true, optional = true }
+console_error_panic_hook = { workspace = true, optional = true }
+harbor = { workspace = true, optional = true, features = ["full"] }
+leptos.workspace = true
+leptos_axum = { workspace = true, optional = true }
+leptos_meta.workspace = true
+leptos_router.workspace = true
+tokio = { workspace = true, optional = true }
+wasm-bindgen = { workspace = true, optional = true }
+
+[features]
+default = []
+hydrate = [
+    "dep:console_error_panic_hook",
+    "dep:wasm-bindgen",
+    "leptos/hydrate",
+]
+ssr = [
+    "dep:axum",
+    "dep:harbor",
+    "dep:leptos_axum",
+    "dep:tokio",
+    "leptos/ssr",
+    "leptos_meta/ssr",
+    "leptos_router/ssr",
+]
+
+[lints]
+workspace = true
+
+[package.metadata.leptos]
+output-name = "harbor-demo"
+site-root = "target/site/harbor-demo"
+site-pkg-dir = "pkg"
+style-file = "style/main.css"
+assets-dir = "public"
+site-addr = "127.0.0.1:3002"
+reload-port = 3003
+browserquery = "defaults"
+env = "PROD"
+bin-features = ["ssr"]
+bin-default-features = false
+lib-features = ["hydrate"]
+lib-default-features = false
+lib-profile-release = "wasm-release"

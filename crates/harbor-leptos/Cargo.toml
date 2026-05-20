@@ -11,11 +11,13 @@ publish = false
 [features]
 default = []
 axum = ["dep:axum"]
+sqlx-sqlite = ["dep:harbor-sqlx"]
 
 [dependencies]
 axum = { workspace = true, optional = true }
 harbor-core.workspace = true
 harbor-email.workspace = true
+harbor-sqlx = { workspace = true, optional = true }
 leptos.workspace = true
 
 [dev-dependencies]

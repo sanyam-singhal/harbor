@@ -1,0 +1,26 @@
+[package]
+name = "harbor"
+description = "Ergonomic auth for Leptos applications."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+harbor-core.workspace = true
+harbor-email.workspace = true
+harbor-leptos = { workspace = true, optional = true }
+harbor-sqlx = { workspace = true, optional = true }
+
+[features]
+default = []
+leptos = ["dep:harbor-leptos"]
+axum = ["leptos", "harbor-leptos/axum"]
+sqlite = ["dep:harbor-sqlx", "harbor-leptos?/sqlx-sqlite"]
+resend = ["harbor-email/email-resend"]
+full = ["axum", "leptos", "resend", "sqlite"]
+
+[lints]
+workspace = true

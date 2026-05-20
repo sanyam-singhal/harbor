@@ -7,15 +7,24 @@
 /// Version of the `harbor-leptos` crate.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
+mod api;
 mod app;
 mod components;
 mod config;
 mod cookie;
 mod csrf;
 mod encoding;
+mod flows;
 mod links;
+mod routes;
+mod runtime;
 mod workflow;
 
+pub use api::{
+    AuthApi, PasswordResetRequest, ResetPasswordRequest, SendEmailOtpRequest,
+    SignInEmailOtpRequest, SignInEmailRequest, SignInMagicLinkRequest, SignOutRequest,
+    SignUpEmailRequest,
+};
 pub use app::{
     Harbor, HarborBuilder, HarborLeptosContext, expect_harbor_context, provide_harbor_context,
     use_harbor_context,
@@ -33,10 +42,15 @@ pub use cookie::{
 pub use csrf::validate_csrf_tokens;
 pub use csrf::{CsrfRequest, HeaderName, issue_csrf_token, validate_csrf_from_headers};
 pub(crate) use encoding::{lower_hex, percent_encode_query};
+pub use flows::{
+    AuthFlowConfig, EmailAndPasswordConfig, PasswordResetConfig, PasswordlessEmailFlowConfig,
+};
 pub use links::{
     AuthLinkQuery, LinkRouteResponse, handle_confirm_email_link, handle_email_link_signin,
-    handle_reset_password_link,
+    handle_email_link_signin_with_policy, handle_reset_password_link,
 };
+pub use routes::{AuthRouteConfig, RoutePath};
+pub use runtime::{AuthRuntime, DefaultAuthClock, DefaultAuthSecretGenerator};
 pub use workflow::{
     AuthActionResponse, EmailCodeActionResponse, SessionActionResponse, current_session,
     request_email_code_signin, request_email_signin, request_password_reset, reset_password,
@@ -45,3 +59,6 @@ pub use workflow::{
 
 #[cfg(feature = "axum")]
 pub mod axum;
+
+#[cfg(feature = "sqlx-sqlite")]
+pub mod sqlx;

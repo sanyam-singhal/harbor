@@ -3,6 +3,7 @@
 //! This crate keeps provider-specific delivery outside `harbor-core` while
 //! exposing a small, testable boundary for auth emails.
 
+mod configured;
 mod message;
 mod recipient;
 mod recording;
@@ -11,6 +12,7 @@ mod renderer;
 mod resend;
 mod url;
 
+pub use configured::{ConfiguredAuthMailer, EmailDeliveryMode};
 pub use message::{AuthEmail, AuthMailer, ChallengeEmailInput, MailDelivery};
 pub use recipient::EmailRecipient;
 pub use recording::RecordingMailer;

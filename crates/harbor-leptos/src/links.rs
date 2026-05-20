@@ -2,7 +2,8 @@
 
 use harbor_core::{
     AuthError, AuthErrorCode, AuthService, AuthStore, ChallengeId, ChallengePurpose, Clock,
-    PasswordBlocklist, RedirectPath, SecretGenerator, SecretToken,
+    EmailChallengeSignInPolicy, PasswordBlocklist, PasswordlessSignup, RedirectPath,
+    SecretGenerator, SecretToken,
 };
 
 use crate::{HarborConfig, build_session_cookie, percent_encode_query};
@@ -78,17 +79,41 @@ where
     G: SecretGenerator,
     B: PasswordBlocklist,
 {
+    handle_email_link_signin_with_policy(service, config, query, PasswordlessSignup::Allowed).await
+}
+
+/// Handles an email signin link with explicit passwordless signup policy.
+///
+/// # Errors
+///
+/// Returns [`AuthError`] when the link is invalid, signin fails, or the cookie
+/// cannot be built.
+pub async fn handle_email_link_signin_with_policy<S, C, G, B>(
+    service: &AuthService<S, C, G, B>,
+    config: &HarborConfig,
+    query: AuthLinkQuery,
+    passwordless_signup: PasswordlessSignup,
+) -> Result<LinkRouteResponse, AuthError>
+where
+    S: AuthStore,
+    C: Clock,
+    G: SecretGenerator,
+    B: PasswordBlocklist,
+{
     let AuthLinkQuery {
         challenge,
         token,
         redirect,
     } = query;
     let signin = service
-        .sign_in_with_email_challenge(harbor_core::EmailChallengeSignInInput {
-            challenge_id: parse_link_challenge_id(challenge)?,
-            secret: parse_link_token(token)?,
-            redirect_path: redirect,
-        })
+        .sign_in_with_email_challenge_with_policy(
+            harbor_core::EmailChallengeSignInInput {
+                challenge_id: parse_link_challenge_id(challenge)?,
+                secret: parse_link_token(token)?,
+                redirect_path: redirect,
+            },
+            EmailChallengeSignInPolicy::new(passwordless_signup),
+        )
         .await?;
     let set_cookie = build_session_cookie(config.cookie_defaults(), &signin.session_token, None)
         .map_err(AuthError::from)?;

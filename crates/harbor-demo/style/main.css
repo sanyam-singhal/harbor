@@ -1,0 +1,233 @@
+:root {
+  color: #12201b;
+  background: #f7faf7;
+  font-family:
+    Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
+    sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+}
+
+a {
+  color: #155e75;
+}
+
+.app-shell {
+  min-height: 100vh;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(247, 250, 247, 0.9)),
+    url("/harbor-auth-bg.svg") center / cover fixed;
+}
+
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  width: min(1120px, calc(100% - 32px));
+  margin: 0 auto;
+  padding: 20px 0;
+}
+
+.brand,
+.topbar nav,
+.actions,
+.link-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.brand {
+  color: #12201b;
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.brand-mark {
+  display: inline-grid;
+  width: 34px;
+  height: 34px;
+  place-items: center;
+  border-radius: 6px;
+  color: #fff;
+  background: #155e75;
+}
+
+.topbar nav a {
+  color: #34443f;
+  font-size: 14px;
+  text-decoration: none;
+}
+
+main {
+  width: min(1120px, calc(100% - 32px));
+  margin: 0 auto;
+  padding: 48px 0 72px;
+}
+
+.hero {
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) minmax(280px, 0.8fr);
+  gap: 32px;
+  align-items: center;
+}
+
+.hero-copy h1,
+.panel h1 {
+  margin: 0;
+  color: #0d1b17;
+  font-size: 48px;
+  line-height: 1.08;
+  letter-spacing: 0;
+}
+
+.hero-copy p,
+.muted {
+  color: #51615c;
+  font-size: 16px;
+}
+
+.eyebrow {
+  margin: 0 0 10px;
+  color: #8a4b16;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.status-panel,
+.panel {
+  border: 1px solid #d8e1dc;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.92);
+  box-shadow: 0 18px 50px rgba(18, 32, 27, 0.08);
+}
+
+.status-panel {
+  padding: 28px;
+}
+
+.status-panel h2 {
+  margin: 0 0 14px;
+  font-size: 20px;
+}
+
+.status-panel li {
+  margin: 10px 0;
+}
+
+.button,
+button {
+  min-height: 42px;
+  border: 1px solid #155e75;
+  border-radius: 6px;
+  padding: 10px 14px;
+  font: inherit;
+  font-weight: 700;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.button.primary,
+button {
+  color: white;
+  background: #155e75;
+}
+
+.button.secondary {
+  color: #155e75;
+  background: white;
+}
+
+.auth-layout {
+  display: grid;
+  min-height: 62vh;
+  place-items: start center;
+}
+
+.panel {
+  width: min(520px, 100%);
+  padding: 28px;
+}
+
+.panel h1 {
+  font-size: 34px;
+}
+
+form {
+  display: grid;
+  gap: 14px;
+  margin-top: 22px;
+}
+
+label {
+  display: grid;
+  gap: 7px;
+  color: #34443f;
+  font-size: 14px;
+  font-weight: 700;
+}
+
+input {
+  min-height: 42px;
+  border: 1px solid #bdcbc5;
+  border-radius: 6px;
+  padding: 10px 12px;
+  color: #12201b;
+  background: #fff;
+  font: inherit;
+}
+
+.success,
+.error,
+.form-note {
+  margin: 16px 0 0;
+  border-radius: 6px;
+  padding: 10px 12px;
+  font-size: 14px;
+}
+
+.success {
+  color: #164e2e;
+  background: #e9f8ee;
+}
+
+.error {
+  color: #8f1d1d;
+  background: #fff0f0;
+}
+
+.form-note {
+  color: #51615c;
+  background: #f4f7f5;
+}
+
+.link-row {
+  flex-wrap: wrap;
+  margin-top: 18px;
+  font-size: 14px;
+}
+
+@media (max-width: 760px) {
+  .topbar,
+  .hero {
+    align-items: stretch;
+    grid-template-columns: 1fr;
+  }
+
+  .topbar {
+    flex-direction: column;
+  }
+
+  .hero-copy h1 {
+    font-size: 36px;
+  }
+}

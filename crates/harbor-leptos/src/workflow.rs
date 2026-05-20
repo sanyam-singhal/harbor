@@ -2,8 +2,8 @@
 
 use harbor_core::{
     AuthError, AuthErrorCode, AuthRateLimitScope, AuthService, AuthStore, ChallengeDelivery,
-    ChallengeId, ChallengePurpose, Clock, EmailAddress, PasswordBlocklist, RateLimitInput,
-    RedirectPath, RetryBudget, SecretGenerator, SecretToken,
+    ChallengeId, ChallengePolicy, ChallengePurpose, Clock, EmailAddress, PasswordBlocklist,
+    RateLimitInput, RedirectPath, RetryBudget, SecretGenerator, SecretToken,
 };
 use harbor_email::{
     AuthMailer, ChallengeEmailInput, EmailRecipient, SecretUrl,
@@ -73,13 +73,16 @@ where
     let signup = service.sign_up_with_password(input).await?;
     let harbor_core::PasswordSignUpOutput { user, email } = signup;
     let challenge = service
-        .create_email_challenge(harbor_core::EmailChallengeInput {
-            purpose: ChallengePurpose::SignupConfirmation,
-            delivery: ChallengeDelivery::MagicLink,
-            email: email.email_original,
-            user_id: Some(user.id),
-            redirect_path: None,
-        })
+        .create_email_challenge_with_policy(
+            harbor_core::EmailChallengeInput {
+                purpose: ChallengePurpose::SignupConfirmation,
+                delivery: ChallengeDelivery::MagicLink,
+                email: email.email_original,
+                user_id: Some(user.id),
+                redirect_path: None,
+            },
+            challenge_policy(config, ChallengePurpose::SignupConfirmation)?,
+        )
         .await?;
     send_challenge_email(mailer, config, challenge, "/auth/confirm-email").await?;
     Ok(AuthActionResponse {
@@ -155,13 +158,16 @@ where
     )
     .await?;
     let challenge = service
-        .create_email_challenge(harbor_core::EmailChallengeInput {
-            purpose: ChallengePurpose::EmailSignIn,
-            delivery: ChallengeDelivery::MagicLink,
-            email,
-            user_id: None,
-            redirect_path,
-        })
+        .create_email_challenge_with_policy(
+            harbor_core::EmailChallengeInput {
+                purpose: ChallengePurpose::EmailSignIn,
+                delivery: ChallengeDelivery::MagicLink,
+                email,
+                user_id: None,
+                redirect_path,
+            },
+            challenge_policy(config, ChallengePurpose::EmailSignIn)?,
+        )
         .await?;
     send_challenge_email(mailer, config, challenge, "/auth/email-link").await?;
     Ok(AuthActionResponse {
@@ -201,13 +207,16 @@ where
     )
     .await?;
     let challenge = service
-        .create_email_challenge(harbor_core::EmailChallengeInput {
-            purpose: ChallengePurpose::EmailSignIn,
-            delivery: ChallengeDelivery::OtpCode,
-            email,
-            user_id: None,
-            redirect_path,
-        })
+        .create_email_challenge_with_policy(
+            harbor_core::EmailChallengeInput {
+                purpose: ChallengePurpose::EmailSignIn,
+                delivery: ChallengeDelivery::OtpCode,
+                email,
+                user_id: None,
+                redirect_path,
+            },
+            challenge_policy(config, ChallengePurpose::EmailSignIn)?,
+        )
         .await?;
     let challenge_id = challenge.challenge.id.clone();
     send_challenge_email(mailer, config, challenge, "/auth/email-code").await?;
@@ -274,7 +283,12 @@ where
         config.rate_limits().password_reset,
     )
     .await?;
-    let reset = service.request_password_reset(input).await?;
+    let reset = service
+        .request_password_reset_with_policy(
+            input,
+            challenge_policy(config, ChallengePurpose::PasswordReset)?,
+        )
+        .await?;
     if let Some(challenge) = reset.challenge {
         send_challenge_email(mailer, config, challenge, "/auth/reset-password").await?;
     }
@@ -373,6 +387,25 @@ fn validate_csrf_request(config: &HarborConfig, csrf: &CsrfRequest) -> Result<()
         csrf.cookie_header.as_deref(),
         csrf.csrf_header.as_deref(),
     )
+}
+
+fn challenge_policy(
+    config: &HarborConfig,
+    purpose: ChallengePurpose,
+) -> Result<ChallengePolicy, AuthError> {
+    let lifetime = match purpose {
+        ChallengePurpose::SignupConfirmation => config.challenge_lifetimes().signup_confirmation,
+        ChallengePurpose::EmailSignIn => config.challenge_lifetimes().email_signin,
+        ChallengePurpose::PasswordReset => config.challenge_lifetimes().password_reset,
+        _ => {
+            return Err(AuthError::with_detail(
+                AuthErrorCode::Internal,
+                "challenge_purpose",
+            ));
+        }
+    };
+    let default = ChallengePolicy::for_purpose(purpose)?;
+    ChallengePolicy::new(lifetime, default.max_attempts(), default.resend_cooldown())
 }
 
 async fn enforce_email_rate_limit<S, C, G, B>(

@@ -306,9 +306,8 @@ collect_rust_files() {
   } | LC_ALL=C sort
 }
 
-emit_package_summary() {
-  local package_name="$1"
-  local package_dir="$2"
+collect_package_counts() {
+  local package_dir="$1"
   local source_lines=0
   local test_lines=0
   local file_count=0
@@ -322,7 +321,7 @@ emit_package_summary() {
     file_count=$((file_count + 1))
   done < <(collect_rust_files "$package_dir")
 
-  print_row "$package_name" "$source_lines" "$test_lines" "$((source_lines + test_lines))" "$file_count"
+  printf '%s %s %s\n' "$source_lines" "$test_lines" "$file_count"
 }
 
 emit_module_summary() {
@@ -356,7 +355,11 @@ emit_module_summary() {
       for (i = 1; i <= n; i++) {
         key = keys[i]
         printf "%-24s %12d %12d %12d %10d\n", key, source[key], tests[key], source[key] + tests[key], files[key]
+        total_source += source[key]
+        total_tests += tests[key]
+        total_files += files[key]
       }
+      printf "%-24s %12d %12d %12d %10d\n", "Total", total_source, total_tests, total_source + total_tests, total_files
     }
   ' "$tmp_file"
 
@@ -375,10 +378,20 @@ fi
 
 print_row "Package" "SourceLines" "TestLines" "TotalLines" "RustFiles"
 
+total_source_lines=0
+total_test_lines=0
+total_file_count=0
+
 for package_name in "${selected_packages[@]}"; do
   package_idx="$(package_index_by_name "$package_name")" || {
     echo "Unknown package: $package_name" >&2
     exit 1
   }
-  emit_package_summary "${package_names[$package_idx]}" "${package_dirs[$package_idx]}"
+  read -r source_lines test_lines file_count < <(collect_package_counts "${package_dirs[$package_idx]}")
+  print_row "${package_names[$package_idx]}" "$source_lines" "$test_lines" "$((source_lines + test_lines))" "$file_count"
+  total_source_lines=$((total_source_lines + source_lines))
+  total_test_lines=$((total_test_lines + test_lines))
+  total_file_count=$((total_file_count + file_count))
 done
+
+print_row "Total" "$total_source_lines" "$total_test_lines" "$((total_source_lines + total_test_lines))" "$total_file_count"

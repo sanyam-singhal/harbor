@@ -1,11 +1,13 @@
 [workspace]
 members = [
+    "crates/harbor",
     "crates/harbor-core",
     "crates/harbor-email",
     "crates/harbor-leptos",
     "crates/harbor-sqlx",
     "crates/harbor-test-support",
     "crates/harbor-headless-demo",
+    "crates/harbor-demo",
 ]
 resolver = "3"
 
@@ -19,20 +21,26 @@ authors = ["Harbor contributors"]
 
 [workspace.dependencies]
 argon2 = { version = "0.5.3", default-features = false, features = ["alloc", "password-hash"] }
-axum = { version = "0.8.9", default-features = false, features = ["query"] }
+axum = { version = "0.8.9", default-features = false, features = ["form", "http1", "matched-path", "query", "tokio"] }
+console_error_panic_hook = { version = "0.1.7", default-features = false }
 getrandom = { version = "0.3.4", default-features = false }
 harbor-core = { path = "crates/harbor-core" }
 harbor-email = { path = "crates/harbor-email" }
 harbor-leptos = { path = "crates/harbor-leptos" }
 harbor-sqlx = { path = "crates/harbor-sqlx" }
+harbor = { path = "crates/harbor" }
 harbor-test-support = { path = "crates/harbor-test-support" }
 hmac = { version = "0.13.0", default-features = false }
 leptos = { version = "0.8.19", default-features = false }
+leptos_axum = { version = "0.8.9", default-features = true }
+leptos_meta = { version = "0.8.6", default-features = false }
+leptos_router = { version = "0.8.12", default-features = false }
 resend-rs = { version = "0.25.1", default-features = false, features = ["rustls-tls"] }
 sha2 = { version = "0.11.0", default-features = false }
 sqlx = { version = "0.8.6", default-features = false, features = ["migrate", "runtime-tokio", "sqlite"] }
 subtle = { version = "2.6.1", default-features = false }
-tokio = { version = "1.48.0", default-features = false, features = ["macros", "rt"] }
+tokio = { version = "1.48.0", default-features = false, features = ["macros", "net", "rt", "rt-multi-thread"] }
+wasm-bindgen = { version = "0.2.106", default-features = false }
 
 [workspace.lints.rust]
 missing_docs = "warn"
@@ -58,3 +66,10 @@ incremental = true
 debug = 0
 incremental = false
 strip = "symbols"
+
+[profile.wasm-release]
+inherits = "release"
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"

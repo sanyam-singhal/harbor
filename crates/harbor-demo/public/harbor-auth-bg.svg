@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 1000" role="img" aria-label="Abstract harbor authentication workspace">
+  <rect width="1600" height="1000" fill="#f7faf7"/>
+  <path d="M0 680c220-70 440-58 660-12 230 48 474 120 704 66 88-20 164-58 236-104v370H0z" fill="#dbe9e3"/>
+  <path d="M0 760c190-46 412-42 650 24 214 59 430 62 610 9 124-36 234-100 340-180v387H0z" fill="#c3d9d1"/>
+  <g fill="none" stroke="#155e75" stroke-width="10" opacity=".42">
+    <path d="M290 590h230l42-150 42 150h238"/>
+    <path d="M890 562h180l34-116 34 116h188"/>
+    <path d="M260 654h1090"/>
+  </g>
+  <g fill="#8a4b16" opacity=".28">
+    <circle cx="1250" cy="250" r="130"/>
+    <circle cx="1330" cy="270" r="38" fill="#f7faf7"/>
+  </g>
+</svg>
